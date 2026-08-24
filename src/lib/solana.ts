@@ -136,8 +136,3 @@ export function explorerTxUrl(signature: string): string {
   return `https://solscan.io/tx/${signature}${suffix}`;
 }
 
-export function explorerAddressUrl(address: string): string {
-  const c = cluster();
-  const suffix = c === 'mainnet-beta' ? '' : `?cluster=${c === 'devnet' ? 'devnet' : 'testnet'}`;
-  return `https://solscan.io/account/${address}${suffix}`;
-}

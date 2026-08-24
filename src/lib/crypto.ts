@@ -94,7 +94,3 @@ export async function decryptPrivateKey(encryptedHex: string): Promise<Uint8Arra
   return decrypted;
 }
 
-export async function generateEncryptionKey(): Promise<string> {
-  await init();
-  return uint8ArrayToHex(sodium.randombytes_buf(KEY_BYTES));
-}
