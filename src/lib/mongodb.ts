@@ -1,50 +1,47 @@
 import mongoose from 'mongoose';
-
-declare global {
-  var mongoose: any;
-}
-
-const MONGODB_URI = process.env.MONGODB_URI;
-
-if (!MONGODB_URI) {
-  throw new Error('Please define the MONGODB_URI environment variable inside .env.local');
-}
+import { mongoUri } from './env';
 
 /**
- * Global is used here to maintain a cached connection across hot reloads
- * in development. This prevents connections growing exponentially
- * during API Route usage.
+ * Cached connection, shared across hot reloads in dev and across warm
+ * invocations in serverless. Without the cache each API request opened a new
+ * connection and Atlas ran out of them.
+ *
+ * The URI is read inside `connectDB`, not at module scope. Reading it at import
+ * time meant `next build` crashed on any machine without a production database
+ * URI — which is every machine that has just cloned the repo.
  */
-let cached = global.mongoose;
 
-if (!cached) {
-  cached = global.mongoose = { conn: null, promise: null };
+interface MongooseCache {
+  conn: typeof mongoose | null;
+  promise: Promise<typeof mongoose> | null;
 }
 
-async function connectDB() {
-  if (cached.conn) {
-    return cached.conn;
-  }
+declare global {
+  var _mongooseCache: MongooseCache | undefined;
+}
+
+const cached: MongooseCache = global._mongooseCache ?? { conn: null, promise: null };
+global._mongooseCache = cached;
+
+export default async function connectDB(): Promise<typeof mongoose> {
+  if (cached.conn) return cached.conn;
 
   if (!cached.promise) {
-    const opts = {
+    cached.promise = mongoose.connect(mongoUri(), {
       bufferCommands: false,
-    };
-
-    cached.promise = mongoose.connect(MONGODB_URI!, opts).then((mongoose) => {
-      return mongoose;
+      // Fail fast rather than letting a route hang until the platform timeout.
+      serverSelectionTimeoutMS: 8000,
     });
   }
 
   try {
     cached.conn = await cached.promise;
   } catch (e) {
+    // Clear the rejected promise so the next request retries instead of
+    // permanently replaying the same failure.
     cached.promise = null;
     throw e;
   }
 
   return cached.conn;
 }
-
-export default connectDB;
-

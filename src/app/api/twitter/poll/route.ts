@@ -1,365 +1,369 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import connectDB from '@/lib/mongodb';
-import User from '@/models/User';
-import { searchMentions, postTweet } from '@/lib/twitter';
-import { Connection, Keypair, PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { requireMachineCaller } from '@/lib/auth';
+import { handleError, ok } from '@/lib/api';
 import { decryptPrivateKey } from '@/lib/crypto';
+import { searchMentions, postTweet } from '@/lib/twitter';
+import { parseTipCommand, BOT_HANDLE } from '@/lib/tip-command';
+import User from '@/models/User';
+import ProcessedTweet from '@/models/ProcessedTweet';
+import PollCursor, { MENTIONS_CURSOR } from '@/models/PollCursor';
+import { ensureCustodialWallet, findUser } from '@/lib/wallets';
+import {
+  explorerTxUrl,
+  getConnection,
+  lamportsToSol,
+  solToLamports,
+  spendableLamports,
+  transferLamports,
+  RENT_EXEMPT_RESERVE,
+} from '@/lib/solana';
 
-const BOT_HANDLE = '@Pourboireonsol';
+/**
+ * Read new @Pourboireonsol mentions and settle the tips in them.
+ *
+ * The two properties that matter here, both of which the previous version
+ * lacked:
+ *
+ *  1. **It is not public.** It signs transfers out of user wallets, so it
+ *     requires the CRON_SECRET and refuses to run at all if that is unset.
+ *
+ *  2. **Each tweet pays at most once, ever.** A tweet id is claimed in
+ *     ProcessedTweet *before* any transfer is attempted. The unique index makes
+ *     that claim atomic, so overlapping runs — or a caller hammering the
+ *     endpoint — cannot double-send. The old version had no such record and
+ *     re-read the same seven-day search window on every invocation.
+ */
 
-function parseTip(text: string): { amount: number; token: 'SOL'|'USDC'; recipientHandle: string } | null {
-  // More flexible parsing - handles formats like:
-  // "@Pourboireonsol tip 0.01 sol @username"
-  // "@Pourboireonsol tip 0.01 @username"
-  // "@Pourboireonsol tip 0.01SOL @username"
-  // "@Pourboireonsol tip @username 0.01 sol"
-  
-  // First try: standard format with token before recipient
-  let re = /@pourboireonsol\s+tip\s+(\d+(?:\.\d+)?)\s*(sol|usdc)?\s+@([a-z0-9_]+)/i;
-  let m = text.match(re);
-  if (m) {
-    const amount = Number(m[1]);
-    const token = (m[2]?.toUpperCase() as 'SOL'|'USDC') || 'SOL';
-    const recipientHandle = `@${m[3]}`;
-    return { amount, token, recipientHandle };
-  }
-  
-  // Second try: format with recipient before amount
-  re = /@pourboireonsol\s+tip\s+@([a-z0-9_]+)\s+(\d+(?:\.\d+)?)\s*(sol|usdc)?/i;
-  m = text.match(re);
-  if (m) {
-    const amount = Number(m[2]);
-    const token = (m[3]?.toUpperCase() as 'SOL'|'USDC') || 'SOL';
-    const recipientHandle = `@${m[1]}`;
-    return { amount, token, recipientHandle };
-  }
-  
-  // Third try: amount without explicit token (default to SOL), recipient anywhere
-  re = /@pourboireonsol\s+tip\s+(\d+(?:\.\d+)?)\s+@([a-z0-9_]+)/i;
-  m = text.match(re);
-  if (m) {
-    const amount = Number(m[1]);
-    const token = 'SOL';
-    const recipientHandle = `@${m[2]}`;
-    return { amount, token, recipientHandle };
-  }
-  
-  return null;
+export const maxDuration = 300;
+
+/** Leave room to finish the run and write results rather than being killed mid-transfer. */
+const TIME_BUDGET_MS = 240_000;
+
+/**
+ * Vercel Cron issues GET requests with `Authorization: Bearer $CRON_SECRET`
+ * attached automatically. POST is kept for manual runs and other schedulers.
+ * Both go through the same guard.
+ */
+export async function GET(req: NextRequest) {
+  return POST(req);
 }
 
 export async function POST(req: NextRequest) {
   try {
+    requireMachineCaller(req);
     await connectDB();
-    const { sinceId } = await req.json().catch(() => ({ sinceId: undefined }));
 
-      // Pull recent mentions of the bot
-      const tweets = await searchMentions(`${BOT_HANDLE} -is:retweet`, sinceId);
-      if (!tweets.length) {
-        return NextResponse.json({ success: true, processed: 0, message: 'No new mentions found' });
+    const startedAt = Date.now();
+
+    // The cursor lives server-side; a caller cannot rewind it to replay old tips.
+    const cursor = await PollCursor.findOneAndUpdate(
+      { key: MENTIONS_CURSOR },
+      { $setOnInsert: { key: MENTIONS_CURSOR } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    const tweets = await searchMentions(`${BOT_HANDLE} -is:retweet`, cursor.sinceId);
+    if (!tweets.length) {
+      cursor.lastRunAt = new Date();
+      await cursor.save();
+      return ok({ processed: 0, skipped: 0, message: 'No new mentions' });
+    }
+
+    // Advance the cursor to the newest id we saw, regardless of per-tip outcome.
+    // Tweet ids are snowflakes: numerically increasing, so max is the newest.
+    let highWater = cursor.sinceId;
+    for (const t of tweets) {
+      if (!highWater || BigInt(t.id) > BigInt(highWater)) highWater = String(t.id);
+    }
+
+    let settled = 0;
+    let skipped = 0;
+    let deferred = 0;
+
+    // Oldest first, so a partial run leaves a contiguous processed prefix.
+    const ordered = [...tweets].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+
+    for (const tweet of ordered) {
+      if (Date.now() - startedAt > TIME_BUDGET_MS) {
+        // Stop cleanly and let the next run continue from the cursor rather than
+        // being killed partway through a transfer.
+        highWater = undefined;
+        break;
       }
 
-    const rpc = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-    const conn = new Connection(rpc);
-
-    // Batch tips by sender-to-recipient pairs to combine multiple tips into single transactions
-    type BatchedTip = {
-      tweet: any;
-      senderHandle: string;
-      recipientHandle: string;
-      amount: number;
-      token: string;
-      tweetId: string;
-    };
-    
-    const batchedTips = new Map<string, BatchedTip[]>();
-    
-    // First pass: parse all tips and group by sender->recipient
-    for (const t of tweets) {
-      const parsed = parseTip(t.text || '');
+      const parsed = parseTipCommand(tweet.text ?? '');
       if (!parsed) continue;
 
-      // Try to get sender username from tweet metadata
-      let senderHandle = `@unknown_${t.author_id}`;
-      try {
-        if ((t as any).author?.username) {
-          senderHandle = `@${(t as any).author.username}`;
-        } else if ((t as any).username) {
-          senderHandle = `@${(t as any).username}`;
-        }
-      } catch {}
-
-      const recipientHandle = parsed.recipientHandle;
-      const batchKey = `${senderHandle}->${recipientHandle}`;
-      
-      if (!batchedTips.has(batchKey)) {
-        batchedTips.set(batchKey, []);
+      const senderHandle = tweet.author?.username ? `@${tweet.author.username.toLowerCase()}` : null;
+      if (!senderHandle) {
+        skipped++;
+        continue;
       }
-      batchedTips.get(batchKey)!.push({
-        tweet: t,
+
+      // No explicit @recipient means "tip the author of the post I replied to" —
+      // the flow the homepage teaches. Without a reply target there is nobody to
+      // pay, so say so rather than failing silently.
+      const recipientHandle =
+        parsed.recipientHandle ??
+        (tweet.replyToAuthor?.username ? `@${tweet.replyToAuthor.username.toLowerCase()}` : null);
+
+      if (!recipientHandle || recipientHandle === senderHandle) {
+        skipped++;
+        continue;
+      }
+
+      // ---- Claim the tweet. First writer wins; everyone else skips. ----
+      try {
+        await ProcessedTweet.create({
+          tweetId: String(tweet.id),
+          status: 'claimed',
+          senderHandle,
+          recipientHandle,
+          amount: parsed.amount,
+          token: parsed.token,
+        });
+      } catch (e: unknown) {
+        if ((e as { code?: number })?.code === 11000) {
+          skipped++;
+          continue;
+        }
+        throw e;
+      }
+
+      const result = await settleTip({
+        tweetId: String(tweet.id),
         senderHandle,
         recipientHandle,
         amount: parsed.amount,
         token: parsed.token,
-        tweetId: t.id
       });
+
+      if (result === 'settled') settled++;
+      else deferred++;
     }
 
-    let processed = 0;
-    
-    // Process batched tips (multiple tips from same sender to same recipient = one transaction)
-    for (const [batchKey, tips] of batchedTips.entries()) {
-      if (tips.length === 0) continue;
-      
-      // Use first tip for lookup (sender/recipient are the same across batch)
-      const firstTip = tips[0];
-      const t = firstTip.tweet;
-      
-      // Validate tweet ID exists
-      if (!t?.id) {
-        console.error(`Tweet ID missing for batched tips. Batch key: ${batchKey}, Tips count: ${tips.length}`);
-        processed += tips.length;
-        continue;
-      }
-      
-      const senderHandle = firstTip.senderHandle;
-      const recipientHandle = firstTip.recipientHandle;
-      const recipientUsername = recipientHandle.replace(/^@/, '');
-      const senderUsername = senderHandle.replace(/^@/, '');
-      
-      // Calculate total amount for batched tips
-      const totalAmount = tips.reduce((sum, tip) => sum + tip.amount, 0);
-      const token = tips[0].token; // All tips in batch should have same token
-      
-      console.log(`Processing ${tips.length} tip(s) batched: sender=${senderHandle}, recipient=${recipientHandle}, total amount=${totalAmount} ${token}`);
+    if (highWater) cursor.sinceId = highWater;
+    cursor.lastRunAt = new Date();
+    cursor.lastError = undefined;
+    await cursor.save();
 
-      // Check if recipient exists (already signed up) or is new (needs wallet created)
-      // Normalize recipient handle to ensure consistent lookup
-      const normalizedRecipientHandle = recipientHandle.startsWith('@') ? recipientHandle : `@${recipientHandle}`;
-      let recipient = await User.findOne({ handle: normalizedRecipientHandle });
-      
-      // If not found, try without @ prefix
-      if (!recipient) {
-        recipient = await User.findOne({ handle: normalizedRecipientHandle.replace(/^@/, '') });
-      }
-      
-      const recipientIsExistingUser = !!recipient && !!recipient.walletAddress && !!recipient.encryptedPrivateKey;
-      
-      console.log(`Recipient check: handle=${normalizedRecipientHandle}, found=${!!recipient}, existing=${recipientIsExistingUser}, wallet=${recipient?.walletAddress || 'N/A'}`);
-      
-      // Check if sender is registered (has custodial wallet)
-      // Look up sender by handle (normalized with @)
-      const normalizedSenderHandle = senderHandle.startsWith('@') ? senderHandle : `@${senderHandle}`;
-      let sender = await User.findOne({ handle: normalizedSenderHandle });
-      
-      // If not found by handle, try without @ prefix
-      if (!sender) {
-        const handleWithoutAt = normalizedSenderHandle.replace(/^@/, '');
-        sender = await User.findOne({ handle: { $in: [handleWithoutAt, `@${handleWithoutAt}`] } });
-      }
-      
-      // Also try to find by Twitter ID if we have the author_id
-      if (!sender && t.author_id) {
-        sender = await User.findOne({ twitterId: t.author_id });
-      }
-      
-      const senderIsRegistered = !!sender && !!sender.encryptedPrivateKey && !!sender.walletAddress;
-      
-      console.log(`Sender check: handle=${normalizedSenderHandle}, author_id=${t.author_id}, found=${!!sender}, registered=${senderIsRegistered}, wallet=${sender?.walletAddress || 'N/A'}`);
+    // Tips that could not settle earlier — usually because the sender had not
+    // funded their wallet yet — are retried here. This is what makes the pending
+    // list resolve itself, so nobody has to press a "Claim" button that never
+    // actually moved any money.
+    const retried = await retryPending(startedAt);
 
-      // Only create wallet for non-existing users (don't create new wallet for existing users)
-      if (!recipient || !recipient.walletAddress || !recipient.encryptedPrivateKey) {
-        // Non-existing user - create wallet for them so we can send SOL
-        const base = process.env.NEXT_PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000');
-        try {
-          const createRes = await fetch(`${base}/api/wallet/create-custodial`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              handle: recipientHandle,
-              twitterId: `temp_${Date.now()}` // Temporary ID until they sign up
-            })
-          });
-          
-          // Refresh recipient after creation
-          if (createRes.ok) {
-            recipient = await User.findOne({ handle: normalizedRecipientHandle });
-            if (!recipient) {
-              recipient = await User.findOne({ handle: normalizedRecipientHandle.replace(/^@/, '') });
-            }
-            console.log(`Recipient wallet created/retrieved: handle=${normalizedRecipientHandle}, wallet=${recipient?.walletAddress || 'N/A'}`);
-          }
-        } catch (e) {
-          console.error('Failed to create recipient wallet:', e);
-        }
-      }
-
-      // Always attempt transfer if sender is registered and recipient has wallet
-      // If sender is not registered, we can't transfer yet (no sender wallet)
-      // But we still generate recipient wallet and record pending claim
-      if (senderIsRegistered && recipient && recipient.walletAddress && token === 'SOL') {
-        try {
-          // Decrypt sender's private key
-          const sk = decryptPrivateKey(sender.encryptedPrivateKey!);
-          const kp = Keypair.fromSecretKey(sk);
-          
-          // Check sender balance before attempting transfer (for total batched amount)
-          const senderBalance = await conn.getBalance(kp.publicKey);
-          const requestedLamports = Math.floor(totalAmount * LAMPORTS_PER_SOL);
-          const estimatedFee = 5000; // Rough estimate for transaction fee (single transaction for all batched tips)
-          
-          if (senderBalance < requestedLamports + estimatedFee) {
-            throw new Error(`Insufficient balance. Available: ${(senderBalance / LAMPORTS_PER_SOL).toFixed(4)} SOL, Requested: ${totalAmount} SOL (batched ${tips.length} tip(s))`);
-          }
-          
-          // Get recent blockhash
-          const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('confirmed');
-          
-          // Create single transaction for all batched tips (one transfer with total amount)
-          const tx = new Transaction({
-            feePayer: kp.publicKey,
-            blockhash,
-            lastValidBlockHeight
-          }).add(
-            SystemProgram.transfer({
-              fromPubkey: kp.publicKey,
-              toPubkey: new PublicKey(recipient.walletAddress), // Always uses the same custodial wallet
-              lamports: requestedLamports // Total amount for all batched tips
-            })
-          );
-          
-          console.log(`Transferring ${totalAmount} SOL (${tips.length} tip(s) batched) from ${sender.walletAddress} to ${recipient.walletAddress} (recipient handle: ${normalizedRecipientHandle})`);
-
-          // Sign and send with skipPreflight to avoid blockhash expiry
-          tx.sign(kp);
-          const sig = await conn.sendRawTransaction(tx.serialize(), {
-            skipPreflight: true,  // Skip preflight since we've validated balance
-            maxRetries: 3
-          });
-
-          // Wait for confirmation
-          let confirmed = false;
-          const startTime = Date.now();
-          while (Date.now() - startTime < 60000) {
-            const status = await conn.getSignatureStatus(sig);
-            if (status?.value?.err) {
-              throw new Error(`Transaction failed: ${JSON.stringify(status.value.err)}`);
-            }
-            if (status?.value?.confirmationStatus === 'confirmed' || status?.value?.confirmationStatus === 'finalized') {
-              confirmed = true;
-              break;
-            }
-            await new Promise(resolve => setTimeout(resolve, 1500));
-          }
-
-          if (!confirmed) {
-            throw new Error('Transaction confirmation timeout');
-          }
-
-          // Record in both users' history (one entry for the batched transaction)
-          sender.history.push({
-            type: 'transfer',
-            amount: totalAmount,
-            token: token,
-            counterparty: recipientHandle,
-            txHash: sig,
-            date: new Date()
-          });
-          recipient.history.push({
-            type: 'tip',
-            amount: totalAmount,
-            token: token,
-            counterparty: senderHandle,
-            txHash: sig,
-            date: new Date()
-          });
-
-          // Remove all pending claims for batched tips
-          const tweetIds = tips.map(tip => tip.tweetId);
-          recipient.pendingClaims = recipient.pendingClaims.filter(
-            (p: any) => !(tweetIds.includes(p.fromTx) && p.sender === senderHandle)
-          );
-
-          await sender.save();
-          await recipient.save();
-
-          // Post success message with Solscan link - transfer succeeded
-          // Recipient wallet was generated and SOL was transferred immediately (even if recipient hasn't signed up yet)
-          // When recipient signs up, they'll see the SOL already in their wallet
-          // Format: "@recipient pay from @sender A X SOL tip(s) have been sent to your wallet! You will see it when you create an account on pourboire.tips. Tx: https://solscan.io/tx/..."
-          const tipText = tips.length === 1 
-            ? `A ${totalAmount} ${token} tip has been sent to your wallet!`
-            : `${tips.length} tips totaling ${totalAmount} ${token} have been sent to your wallet!`;
-          const replyText = `@${recipientUsername} pay from @${senderUsername} ${tipText} You will see it when you create an account on pourboire.tips. Tx: https://solscan.io/tx/${sig}`;
-          const replyId = await postTweet(replyText, t.id ? String(t.id) : undefined);
-          if (!replyId) {
-            console.error(`Failed to post reply to tweet ${t.id}. Tweet ID type: ${typeof t.id}, Value: ${t.id}`);
-          }
-          
-        } catch (e: any) {
-          console.error('Failed to send batched tip on-chain:', e);
-          // Transfer failed - record all tips as pending claims, no Solscan link yet
-          if (recipient) {
-            for (const tip of tips) {
-              const existingClaim = recipient.pendingClaims.find(
-                (p: any) => p.fromTx === tip.tweetId && p.sender === senderHandle
-              );
-              if (!existingClaim) {
-                recipient.pendingClaims.push({
-                  amount: tip.amount,
-                  token: tip.token,
-                  fromTx: tip.tweetId,
-                  sender: senderHandle
-                });
-              }
-            }
-            await recipient.save();
-          }
-          const message = `@${recipientUsername} pay from @${senderUsername} ${tips.length === 1 ? `A ${totalAmount} ${token} tip` : `${tips.length} tips totaling ${totalAmount} ${token}`} ${tips.length === 1 ? 'has' : 'have'} been recorded for you! Claim ${tips.length === 1 ? 'it' : 'them'} to receive the Solscan link:`;
-          const replyId = await postTweet(message, t.id ? String(t.id) : undefined);
-          if (!replyId) {
-            console.error(`Failed to post reply to tweet ${t.id} (transfer failed). Tweet ID type: ${typeof t.id}, Value: ${t.id}`);
-          }
-        }
-      } else {
-        // Sender not registered - can't transfer yet (no sender wallet)
-        // Sender needs to sign up on pourboire.tips first to create a custodial wallet
-        // Generate recipient wallet and record pending claims for all tips
-        // When sender signs up and funds their wallet, they can claim and send the tips
-        console.log(`Sender ${normalizedSenderHandle} not registered - recording ${tips.length} pending claim(s)`);
-        if (recipient) {
-          for (const tip of tips) {
-            const existingClaim = recipient.pendingClaims.find(
-              (p: any) => p.fromTx === tip.tweetId && p.sender === normalizedSenderHandle
-            );
-            if (!existingClaim) {
-              recipient.pendingClaims.push({
-                amount: tip.amount,
-                token: tip.token,
-                fromTx: tip.tweetId,
-                sender: normalizedSenderHandle
-              });
-            }
-          }
-          await recipient.save();
-        }
-        // Format: "@recipient pay from @sender A X SOL tip has been recorded for you! Claim it to receive the Solscan link:"
-        // Note: Sender must sign up on pourboire.tips first to fund their wallet before the tip can be sent
-        const message = `@${recipientUsername} pay from @${senderUsername} ${tips.length === 1 ? `A ${totalAmount} ${token} tip` : `${tips.length} tips totaling ${totalAmount} ${token}`} ${tips.length === 1 ? 'has' : 'have'} been recorded for you! The sender needs to sign up on pourboire.tips first. Claim ${tips.length === 1 ? 'it' : 'them'} to receive the Solscan link:`;
-        const replyId = await postTweet(message, t.id ? String(t.id) : undefined);
-        if (!replyId) {
-          console.error(`Failed to post reply to tweet ${t.id} (sender not registered). Tweet ID type: ${typeof t.id}, Value: ${t.id}`);
-        }
-      }
-
-      processed += tips.length; // Count all tips in the batch
-    }
-
-    return NextResponse.json({ success: true, processed });
-  } catch (e: any) {
-    const msg = e?.message || String(e);
-    console.error('twitter/poll error', msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return ok({
+      processed: settled + retried,
+      deferred,
+      skipped,
+      scanned: tweets.length,
+    });
+  } catch (e) {
+    return handleError('twitter/poll', e);
   }
 }
 
+/** How long a tip keeps being retried before we stop trying. */
+const RETRY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * Re-attempt tips that parsed correctly but could not be paid at the time.
+ *
+ * Only `pending` and `failed` rows are eligible — never `unconfirmed`, because
+ * an unconfirmed transfer may still land and retrying it would send the money
+ * twice, which is precisely what this ledger exists to prevent.
+ */
+async function retryPending(startedAt: number): Promise<number> {
+  const candidates = await ProcessedTweet.find({
+    status: { $in: ['pending', 'failed'] },
+    createdAt: { $gt: new Date(Date.now() - RETRY_WINDOW_MS) },
+  })
+    .sort({ createdAt: 1 })
+    .limit(50);
+
+  let settled = 0;
+  for (const row of candidates) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) break;
+    if (!row.senderHandle || !row.recipientHandle || !row.amount || !row.token) continue;
+
+    const result = await settleTip(
+      {
+        tweetId: row.tweetId,
+        senderHandle: row.senderHandle,
+        recipientHandle: row.recipientHandle,
+        amount: row.amount,
+        token: row.token,
+      },
+      { quiet: true }
+    );
+    if (result === 'settled') settled++;
+  }
+  return settled;
+}
+
+type SettleResult = 'settled' | 'deferred';
+
+async function settleTip(
+  tip: {
+    tweetId: string;
+    senderHandle: string;
+    recipientHandle: string;
+    amount: number;
+    token: 'SOL' | 'USDC';
+  },
+  opts: { quiet?: boolean } = {}
+): Promise<SettleResult> {
+  // On a retry we stay quiet about the same failure — otherwise every poll run
+  // would post another 'please fund your wallet' reply under the same tweet.
+  const notify = (text: string) => (opts.quiet ? Promise.resolve(null) : postTweet(text, tip.tweetId));
+  const mark = (status: string, fields: Record<string, unknown> = {}) =>
+    ProcessedTweet.updateOne({ tweetId: tip.tweetId }, { $set: { status, ...fields } });
+
+  // USDC is parsed and acknowledged but there is no SPL transfer path yet.
+  // The old code silently dropped these into the SOL branch, where the batch key
+  // ignored the token and USDC amounts were summed into a *SOL* transfer.
+  if (tip.token !== 'SOL') {
+    await mark('pending', { note: 'USDC tips are not supported yet' });
+    await notify(
+      `${tip.senderHandle} USDC tips aren't supported yet — only SOL for now. Nothing was sent.`
+    );
+    return 'deferred';
+  }
+
+  const sender = await findUser({ handle: tip.senderHandle });
+  if (!sender?.encryptedPrivateKey || !sender.walletAddress) {
+    await mark('pending', { note: 'sender has no funded tip wallet' });
+    await recordPendingClaim(tip);
+    await notify(
+      `@${tip.recipientHandle.replace(/^@/, '')} ${tip.senderHandle} wants to tip you ${tip.amount} SOL. They need to sign in at pourboire.tips and fund their tip wallet first.`
+    );
+    return 'deferred';
+  }
+
+  const { user: recipient } = await ensureCustodialWallet({ handle: tip.recipientHandle });
+
+  const lamports = solToLamports(tip.amount);
+
+  // A transfer that would leave the recipient's brand-new account below the
+  // rent-exempt floor is rejected by the runtime — the old code sent it anyway
+  // and burned a fee on every retry.
+  if (lamports < RENT_EXEMPT_RESERVE) {
+    await mark('pending', { note: 'below rent-exempt minimum' });
+    await notify(
+      `${tip.senderHandle} that tip is too small to land on-chain — the minimum is about ${lamportsToSol(RENT_EXEMPT_RESERVE).toFixed(5)} SOL. Nothing was sent.`
+    );
+    return 'deferred';
+  }
+
+  let keypair: Keypair;
+  try {
+    keypair = Keypair.fromSecretKey(await decryptPrivateKey(sender.encryptedPrivateKey));
+  } catch {
+    await mark('failed', { note: 'sender key could not be decrypted' });
+    return 'deferred';
+  }
+
+  const balance = await getConnection().getBalance(keypair.publicKey, 'confirmed');
+  if (lamports > spendableLamports(balance)) {
+    await mark('pending', { note: 'insufficient sender balance' });
+    await recordPendingClaim(tip);
+    await notify(
+      `${tip.senderHandle} your tip wallet doesn't have enough SOL for that ${tip.amount} SOL tip. Top it up at pourboire.tips and mention me again.`
+    );
+    return 'deferred';
+  }
+
+  const outcome = await transferLamports({
+    from: keypair,
+    to: new PublicKey(recipient.walletAddress),
+    lamports,
+  });
+
+  if (outcome.status === 'failed') {
+    // Nothing landed, so it is safe to let this tweet be retried later.
+    await mark('failed', { note: outcome.reason, txHash: outcome.signature });
+    return 'deferred';
+  }
+
+  // `unconfirmed` stays claimed, never released — the transfer may still land and
+  // releasing it would be exactly the double-send this ledger exists to prevent.
+  await mark(outcome.status === 'confirmed' ? 'settled' : 'unconfirmed', {
+    txHash: outcome.signature,
+  });
+
+  await User.updateOne(
+    { _id: sender._id },
+    {
+      $push: {
+        history: {
+          type: 'transfer',
+          direction: 'out',
+          amount: tip.amount,
+          token: 'SOL',
+          counterparty: tip.recipientHandle,
+          txHash: outcome.signature,
+          status: outcome.status,
+          date: new Date(),
+        },
+      },
+    }
+  );
+
+  // $push/$pull rather than reassigning the whole array: the old code replaced
+  // `recipient.pendingClaims` wholesale, so a claim added by a concurrent request
+  // between read and save was silently discarded.
+  await User.updateOne(
+    { _id: recipient._id },
+    {
+      $push: {
+        history: {
+          type: 'tip',
+          direction: 'in',
+          amount: tip.amount,
+          token: 'SOL',
+          counterparty: tip.senderHandle,
+          txHash: outcome.signature,
+          status: outcome.status,
+          date: new Date(),
+        },
+      },
+      $pull: { pendingClaims: { fromTx: tip.tweetId } },
+    }
+  );
+
+  const recipientName = tip.recipientHandle.replace(/^@/, '');
+  await postTweet(
+    `@${recipientName} ${tip.senderHandle} sent you ${tip.amount} SOL. It's already in your tip wallet — sign in at pourboire.tips to use it. ${explorerTxUrl(outcome.signature)}`,
+    tip.tweetId
+  );
+
+  return 'settled';
+}
+
+/** Record an intent so the recipient can see it even before it settles. */
+async function recordPendingClaim(tip: {
+  tweetId: string;
+  senderHandle: string;
+  recipientHandle: string;
+  amount: number;
+  token: 'SOL' | 'USDC';
+}) {
+  const { user: recipient } = await ensureCustodialWallet({ handle: tip.recipientHandle });
+  await User.updateOne(
+    { _id: recipient._id, 'pendingClaims.fromTx': { $ne: tip.tweetId } },
+    {
+      $push: {
+        pendingClaims: {
+          amount: tip.amount,
+          token: tip.token,
+          fromTx: tip.tweetId,
+          sender: tip.senderHandle,
+          createdAt: new Date(),
+        },
+      },
+    }
+  );
+}

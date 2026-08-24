@@ -1,960 +1,638 @@
-'use client';
+﻿'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { usePrivy } from '@privy-io/react-auth';
-import { Connection, PublicKey, LAMPORTS_PER_SOL, Transaction, SystemProgram } from '@solana/web3.js';
-import dynamic from 'next/dynamic';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useApi, ApiError } from '@/lib/use-api';
+import { useToast } from '@/components/ui/toast';
+import { CopyButton, truncateMiddle } from '@/components/ui/copy-button';
+import { exampleCommand } from '@/lib/tip-command';
+import { FundDialog } from './fund-dialog';
+import { WithdrawDialog } from './withdraw-dialog';
+import type { MeResponse, HistoryItem } from './types';
 
-// Dynamically import WalletMultiButton to prevent hydration issues
-const DynamicWalletMultiButton = dynamic(
-  () => import('@solana/wallet-adapter-react-ui').then(m => m.WalletMultiButton),
-  { ssr: false }
-);
+type Tab = 'overview' | 'activity';
 
-type HistoryItem = {
-  type: 'tip' | 'transfer';
-  amount: number;
-  token: 'SOL' | 'USDC';
-  counterparty: string;
-  txHash: string;
-  date: string | Date;
-};
+export default function DashboardPage() {
+  // `ready` is the fix for the logged-out flash: usePrivy reports user=null while
+  // it restores the session, and the old code rendered the whole "Connect your
+  // account" screen during that window on every single load.
+  const { ready, authenticated, user, login, logout } = usePrivy();
+  const api = useApi();
+  const { toast } = useToast();
 
-export default function Dashboard() {
-  const { user, login, logout } = usePrivy();
-  const [balance, setBalance] = useState<number>(0);
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'transactions' | 'auto-pay' | 'settings'>('overview');
-  const [userData, setUserData] = useState<any>(null);
-  const [pendingTips, setPendingTips] = useState<any[]>([]);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [dbUserId, setDbUserId] = useState<string | null>(null);
-  const [isClient, setIsClient] = useState(false);
-  const [tipAddress, setTipAddress] = useState<string | null>(null);
-  const [showFund, setShowFund] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [fundAmount, setFundAmount] = useState<string>("");
-  const [showWithdraw, setShowWithdraw] = useState(false);
-  const [withdrawAmount, setWithdrawAmount] = useState<string>("");
-  const [withdrawAddress, setWithdrawAddress] = useState<string>("");
-  const [withdrawing, setWithdrawing] = useState(false);
-  const [solPrice, setSolPrice] = useState<number>(150); // Default to $150 if fetch fails
-  const { publicKey, signTransaction, sendTransaction, connected } = useWallet();
-  const rpcEndpoint = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+  const [data, setData] = useState<MeResponse | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Fetch SOL price from CoinGecko
+  // Derived, not stored: "loading" is simply "signed in, nothing yet, no error".
+  // Keeping it in state meant setting it synchronously from an effect, and left
+  // room for the flag and the data to disagree.
+  const loadState: 'idle' | 'loading' | 'loaded' | 'error' = !authenticated
+    ? 'idle'
+    : data
+      ? 'loaded'
+      : loadError
+        ? 'error'
+        : 'loading';
+  const [tab, setTab] = useState<Tab>('overview');
+  const [fundOpen, setFundOpen] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+
+  // Bumped to ask the effect below for a fresh load.
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // The initial load is owned by the effect, with a cancellation guard so a slow
+  // response from a previous session cannot land on top of a newer one.
   useEffect(() => {
-    const fetchSolPrice = async () => {
+    if (!ready || !authenticated) return;
+    let cancelled = false;
+
+    void (async () => {
       try {
-        const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
-        const data = await response.json();
-        if (data?.solana?.usd) {
-          setSolPrice(data.solana.usd);
-        }
-      } catch (error) {
-        console.error('Failed to fetch SOL price, using default:', error);
-        // Keep default price
+        const res = await api<MeResponse>('/api/me');
+        if (cancelled) return;
+        setData(res);
+        setLoadError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setLoadError(e instanceof ApiError ? e.message : 'Could not load your dashboard.');
       }
+    })();
+
+    return () => {
+      cancelled = true;
     };
-    fetchSolPrice();
-    // Refresh price every 5 minutes
-    const interval = setInterval(fetchSolPrice, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, []);
+  }, [ready, authenticated, api, reloadKey]);
 
-  const getSolanaAddress = (u: any): string | null => {
-    if (!u) return null;
-    // Prefer primary wallet if it’s Solana
-    const primary = (u as any).wallet;
-    if (primary?.address && (primary as any).chainType === 'solana') return primary.address;
-    // Search linked accounts for a Solana wallet
-    const linked = (u as any).linkedAccounts || [];
-    const sol = linked.find((a: any) => a.type === 'wallet' && a.chainType === 'solana');
-    if (sol?.address) return sol.address;
-    return null;
-  };
-
-  const formatAddress = (addr?: string | null) => {
-    if (!addr) return '';
-    return `${addr.slice(0, 8)}...${addr.slice(-8)}`;
-  };
-
-  // Client-side rendering check
-  useEffect(() => { setIsClient(true); }, []);
-
-  const ensureTipAccount = async (handle: string) => {
+  /**
+   * Background refresh, called from event handlers after an action changes the
+   * balance. A failure here surfaces as a toast and leaves the dashboard showing
+   * the data it already has, rather than blanking a working screen.
+   */
+  const refresh = useCallback(async () => {
     try {
-      console.log('ensureTipAccount called with handle:', handle);
-      
-      // Get Twitter ID from user's linked accounts if available
-      const twitterAccount = user?.linkedAccounts?.find((a: any) => a.type === 'twitter_oauth') as any;
-      const twitterId = twitterAccount?.subject || twitterAccount?.providerId || undefined;
-      
-      // Don't pass Privy embedded wallet - we want to find/create the custodial wallet
-      console.log('Fetching custodial wallet for:', { handle, twitterId });
-      
-      const res = await fetch('/api/wallet/ensure-tip-account', {
-        method: 'POST', 
-        headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ 
-          handle,
-          twitterId
-        })
-      });
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error('ensure-tip-account failed:', errorText);
-        // Don't fall back to Privy embedded wallet - we need the custodial wallet
-        // The API should always return a wallet address for registered users
-        return;
-      }
-      const data = await res.json();
-      if (data?.walletAddress) {
-        // Always use the custodial wallet from the database, never Privy embedded wallet
-        setTipAddress(data.walletAddress);
-        await fetchWalletBalance(data.walletAddress);
-        await fetchPendingAndHistory(data.walletAddress);
-        console.log('Set tip address from database:', data.walletAddress);
-      } else {
-        console.error('ensure-tip-account returned no walletAddress:', data);
-      }
+      const res = await api<MeResponse>('/api/me');
+      setData(res);
+      setLoadError(null);
     } catch (e) {
-      console.error('ensure-tip-account error', e);
-      // Don't fall back to Privy embedded wallet - we need the custodial wallet
-    }
-  };
-
-  // Fetch balance from embedded/custodial wallet
-  useEffect(() => {
-    if (!user) {
-      setTipAddress(null);
-      setBalance(0);
-      setLoading(false);
-      setPendingTips([]);
-      setHistory([]);
-      return;
-    }
-    const handle = userData?.handle;
-    if (handle) {
-      console.log('Calling ensureTipAccount with handle:', handle);
-      ensureTipAccount(handle);
-    } else {
-      console.warn('No handle found in userData, waiting for userData to be set...');
-    }
-  }, [user, userData?.handle]);
-
-  // Handle user profile from Privy linked accounts
-  useEffect(() => {
-    if (user) {
-      const twitterAccount = user.linkedAccounts.find((a: any) => a.type === 'twitter_oauth') as any;
-      const emailAccount = user.linkedAccounts.find((a: any) => a.type === 'email') as any;
-      if (twitterAccount) {
-        const handle = twitterAccount?.username ? `@${twitterAccount.username}` : '';
-        const name = twitterAccount?.name || handle || 'User';
-        const profileImage = twitterAccount?.profilePictureUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=3B82F6&color=fff`;
-        setUserData({
-          id: user.id,
-          handle,
-          name,
-          profileImage,
-          bio: '',
-          walletAddress: getSolanaAddress(user) || '',
-          isEmbedded: true,
-        });
-      } else if (emailAccount) {
-        const name = emailAccount.address.split('@')[0];
-        setUserData({
-          id: user.id,
-          handle: emailAccount.address,
-          name,
-          profileImage: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=3B82F6&color=fff`,
-          bio: 'Connected via email',
-          walletAddress: getSolanaAddress(user) || '',
-          isEmbedded: true,
-        });
-      }
-    } else {
-      setUserData(null);
-    }
-  }, [user]);
-
-  // Fetch real wallet balance
-  const fetchWalletBalance = async (walletAddress: string) => {
-    try {
-      const response = await fetch(`/api/wallet/balance?address=${walletAddress}`);
-      const data = await response.json();
-      if (data.success) setBalance(data.sol.amount);
-    } catch (error) {
-      console.error('Failed to fetch balance:', error);
-    }
-  };
-
-  const fetchPendingAndHistory = async (walletAddress: string) => {
-    try {
-      const res = await fetch(`/api/tips/pending?walletAddress=${walletAddress}`);
-      const data = await res.json();
-      if (data.success) {
-        setPendingTips((data.pending || []).map((p: any) => ({
-          id: p._id || p.id,
-          amount: p.amount,
-          token: p.token,
-          sender: p.sender,
-          tweetId: p.fromTx,
-          timestamp: new Date(),
-          status: 'pending'
-        })));
-        setHistory((data.history || []).map((h: any) => ({ ...h })));
-        setDbUserId(data.user?.id || null);
-      }
-    } catch (e) {
-      console.error('Failed to fetch pending/history', e);
-    }
-  };
-
-  const claimTip = async (tipId: string) => {
-    try {
-      if (!dbUserId) {
-        console.error('Claim failed: User ID not found');
-        return;
-      }
-      const res = await fetch('/api/tips/claim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: dbUserId, tipId })
+      toast({
+        tone: 'error',
+        title: "Couldn't refresh",
+        description: e instanceof ApiError ? e.message : 'Please try again.',
       });
-      const data = await res.json();
-      if (!res.ok) {
-        console.error('Claim failed:', data.error || 'Unknown error');
-        return;
-      }
-      if (data.success) {
-        setPendingTips(prev => prev.filter(t => (t.id || t._id) !== tipId));
-        // refresh history after claim
-        const addr = getSolanaAddress(user);
-        if (addr) fetchPendingAndHistory(addr);
-      }
-    } catch (e: any) {
-      console.error('Claim failed', e);
     }
-  };
+  }, [api, toast]);
 
-  const formatDate = (date: Date) => {
-    return new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    }).format(date);
-  };
+  const wallet = data?.wallet ?? null;
+  const balanceLabel = useMemo(() => {
+    if (!wallet) return null;
+    if (wallet.balanceError || wallet.balanceSol === null) return null;
+    return wallet.balanceSol.toFixed(4);
+  }, [wallet]);
 
-  const formatAmount = (amount: number, token: string) => {
-    return `${amount} ${token}`;
-  };
-
-  // Show loading state during hydration
-  if (!isClient) {
-    return (
-      <div className="min-h-screen relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-black to-black">
-          <div className="absolute top-0 right-0 w-96 h-96 bg-purple-500/30 rounded-full blur-3xl"></div>
-          <div className="absolute bottom-0 left-0 w-80 h-80 bg-blue-500/20 rounded-full blur-2xl"></div>
-        </div>
-        <div className="relative z-10 min-h-screen text-white flex items-center justify-center">
-          <div className="text-center">
-            <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-white/70 font-light">Loading...</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  if (!ready) return <FullScreenStatus message="Restoring your session…" />;
 
   return (
-    <div className="min-h-screen relative overflow-hidden">
-      {/* Background with gradient similar to hero */}
-      <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-black to-black">
-        <div className="absolute top-0 right-0 w-96 h-96 bg-purple-500/30 rounded-full blur-3xl"></div>
-        <div className="absolute bottom-0 left-0 w-80 h-80 bg-blue-500/20 rounded-full blur-2xl"></div>
-      </div>
-      
-      {/* Content */}
-      <div className="relative z-10 min-h-screen text-white">
-        {/* Header */}
-        <header className="border-b border-white/10 bg-white/5 backdrop-blur-sm">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-                    <h1 className="text-3xl font-extralight tracking-tight">Pourboire Dashboard</h1>
-              <span className="px-3 py-1 bg-green-500/20 text-green-400 rounded-full text-xs font-light">
-                Live
+    <div className="min-h-screen bg-black text-white">
+      <BackgroundGlow />
+
+      <header className="relative z-10 border-b border-white/10 bg-white/5 backdrop-blur-sm">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
+            <Link
+              href="/"
+              className="truncate text-xl font-extralight tracking-tight sm:text-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 rounded"
+            >
+              Pourboire
+            </Link>
+            {data?.cluster && data.cluster !== 'mainnet-beta' && (
+              // A visible, permanent reminder. The old UI showed a green "Live"
+              // badge regardless of which cluster it was pointed at.
+              <span className="rounded-full bg-amber-500/20 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-amber-300">
+                {data.cluster}
               </span>
-              <a href="https://x.com/Pourboireonsol" target="_blank" rel="noreferrer" className="px-3 py-1 bg-blue-500/20 text-blue-400 rounded-full text-xs font-light hover:bg-blue-500/30">
-                Follow on X
-              </a>
-              {userData && (
-                <span className="px-3 py-1 bg-blue-500/20 text-blue-400 rounded-full text-xs font-light">
-                  {userData.handle}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center space-x-4">
-              {user ? (
-                <div className="flex items-center space-x-4">
-                  <div className="flex items-center space-x-2 text-green-400">
-                    <span className="text-sm font-light">✓ X Connected</span>
-                  </div>
-                  <button
-                    onClick={() => logout()}
-                    className="bg-red-500 hover:bg-red-600 text-white py-2 px-4 rounded-xl transition-colors font-light tracking-tight"
-                  >
-                    Disconnect
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => login()}
-                  className="bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded-xl transition-colors font-light tracking-tight"
-                >
-                  Connect Account
-                </button>
-              )}
-            </div>
+            )}
+            {data?.user?.handle && (
+              <span className="truncate rounded-full bg-blue-500/20 px-2.5 py-1 text-xs font-light text-blue-300">
+                {data.user.handle}
+              </span>
+            )}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            {authenticated ? (
+              <button
+                type="button"
+                onClick={() => logout()}
+                className="rounded-xl border border-white/15 px-3 py-2 text-sm font-light transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              >
+                Sign out
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => login()}
+                className="rounded-xl bg-blue-500 px-4 py-2 text-sm font-light transition hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              >
+                Sign in
+              </button>
+            )}
           </div>
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-6 py-8">
-        {!user ? (
-          <div className="text-center py-16">
-            <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-full flex items-center justify-center">
-              <span className="text-3xl">🔗</span>
-            </div>
-            <h2 className="text-3xl font-bold mb-4">Connect your account</h2>
-            <p className="text-white/70 mb-8 max-w-md mx-auto">
-              Connect your account to start sending and receiving tips. Twitter login preferred, but email works too.
-            </p>
-            <button
-              onClick={() => login()}
-              className="bg-blue-500 hover:bg-blue-600 text-white py-3 px-8 rounded-xl transition-colors text-lg font-light tracking-tight"
-            >
-              Connect Account
-            </button>
-          </div>
+      <main id="main" className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6">
+        {!authenticated ? (
+          <SignedOut onLogin={login} />
+        ) : data?.needsTwitter ? (
+          <NeedsTwitter />
+        ) : loadState === 'error' ? (
+          <LoadFailed
+            message={loadError}
+            onRetry={() => {
+              // Clearing the error puts the page back into `loading` and bumping
+              // the key re-runs the load effect.
+              setLoadError(null);
+              setReloadKey((k) => k + 1);
+            }}
+          />
+        ) : loadState !== 'loaded' || !data ? (
+          <DashboardSkeleton />
         ) : (
           <>
-            {/* Profile Header */}
-            {userData && (
-              <div className="bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-white/10 rounded-2xl p-8 mb-8 backdrop-blur-sm">
-                <div className="flex items-center space-x-6">
-                  <img
-                    src={userData.profileImage}
-                    alt={userData.name}
-                    className="w-20 h-20 rounded-full border-2 border-white/20"
-                  />
-                  <div className="flex-1">
-                    <h2 className="text-3xl font-extralight tracking-tight mb-2">{userData.name}</h2>
-                    <p className="text-blue-300 text-lg font-light mb-2">{userData.handle}</p>
-                    {userData.bio && (
-                      <p className="text-white/70 text-sm font-light leading-relaxed">{userData.bio}</p>
-                    )}
-                  </div>
-                  <div className="text-right">
-                    <div className="text-xs font-light text-white/70 mb-1 tracking-tight">Tip Wallet Address</div>
-                    <button
-                      onClick={() => {
-                        if (tipAddress) { navigator.clipboard.writeText(tipAddress); setCopied(true); setTimeout(()=>setCopied(false),1000); }
-                      }}
-                      className="font-mono text-sm font-light rounded px-2 py-1 hover:bg-white/5 transition"
-                      title="Copy"
-                    >
-                      {tipAddress ? formatAddress(tipAddress) : 'Loading wallet...'}
-                    </button>
-                    <div className="text-xs text-green-400 mt-1 font-light">
-                      ✓ Auto-created for tips
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+            <ProfileCard
+              user={data.user}
+              walletAddress={wallet?.address ?? null}
+              privyEmail={
+                user?.email?.address ??
+                (user?.linkedAccounts?.find((a) => a.type === 'email') as { address?: string })
+                  ?.address
+              }
+            />
 
-            {/* Balance Card */}
-            <div className="bg-gradient-to-r from-purple-500/10 to-blue-500/10 border border-white/10 rounded-2xl p-8 mb-8 backdrop-blur-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-2xl font-extralight tracking-tight mb-2">Tip Account Balance</h2>
-                  <div className="text-4xl font-extralight tracking-tight">
-                    {loading ? '...' : `${balance.toFixed(4)} SOL`}
-                  </div>
-                  <p className="text-white/70 mt-2 font-light">
-                    ≈ ${(balance * solPrice).toFixed(2)} USD
-                  </p>
-                  <p className="text-xs text-white/50 mt-1 font-light">
-                    Auto-created wallet for receiving tips
-                  </p>
-                </div>
-                <div className="text-right">
-                  <button 
-                    onClick={async () => { setShowFund(true); if (userData?.handle) { try { await ensureTipAccount(userData.handle); } catch (e) { console.error('ensureTipAccount failed', e); } } }}
-                    className="bg-blue-500 hover:bg-blue-600 text-white py-3 px-6 rounded-xl transition-colors font-light tracking-tight"
-                  >
-                    Fund Account
-                  </button>
-                </div>
-              </div>
-            </div>
+            <BalanceCard
+              balanceLabel={balanceLabel}
+              unavailable={Boolean(wallet?.balanceError)}
+              onFund={() => setFundOpen(true)}
+              onWithdraw={() => setWithdrawOpen(true)}
+              onRetry={() => refresh()}
+              canWithdraw={Boolean(balanceLabel && Number(balanceLabel) > 0)}
+            />
 
-            {/* Tabs */}
-            <div className="flex space-x-1 mb-8 bg-white/5 rounded-xl p-1 backdrop-blur-sm">
-              {[
-                { id: 'overview', label: 'Overview' },
-                { id: 'transactions', label: 'Transactions' },
-                { id: 'auto-pay', label: 'Auto-Pay' },
-                { id: 'settings', label: 'Settings' }
-              ].map((tab) => (
+            <nav
+              aria-label="Dashboard sections"
+              // Scrolls rather than clipping. At 375px the old fixed row needed
+              // ~450px and the last tabs were simply unreachable.
+              className="-mx-4 mb-6 mt-8 flex gap-1 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0"
+            >
+              {(
+                [
+                  ['overview', 'Overview'],
+                  ['activity', 'Activity'],
+                ] as const
+              ).map(([id, label]) => (
                 <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id as any)}
-                  className={`px-6 py-3 rounded-lg font-light tracking-tight transition-all duration-200 ${
-                    activeTab === tab.id
-                      ? 'bg-white/10 text-white'
-                      : 'text-white/70 hover:text-white hover:bg-white/5'
+                  key={id}
+                  type="button"
+                  onClick={() => setTab(id)}
+                  aria-current={tab === id ? 'page' : undefined}
+                  className={`shrink-0 rounded-lg px-4 py-2.5 text-sm font-light tracking-tight transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
+                    tab === id ? 'bg-white/10 text-white' : 'text-white/60 hover:bg-white/5 hover:text-white'
                   }`}
                 >
-                  {tab.label}
+                  {label}
                 </button>
               ))}
-            </div>
+            </nav>
 
-            {/* Tab Content */}
-            {activeTab === 'overview' && (
-              <div className="space-y-6">
-                {/* Pending Tips Alert */}
-                {pendingTips.length > 0 && (
-                  <div className="bg-gradient-to-r from-yellow-500/10 to-orange-500/10 border border-white/10 rounded-xl p-6 backdrop-blur-sm">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-8 h-8 bg-yellow-500 rounded-full flex items-center justify-center">
-                          <span className="text-white text-sm">💰</span>
-                        </div>
-                        <div>
-                          <h3 className="text-lg font-extralight tracking-tight text-yellow-400">Pending Tips</h3>
-                          <p className="text-yellow-300/70 font-light">You have {pendingTips.length} tips waiting to be claimed</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setActiveTab('transactions')}
-                        className="bg-yellow-500 hover:bg-yellow-600 text-white py-2 px-4 rounded-lg transition-colors font-light tracking-tight"
-                      >
-                        View All
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-sm">
-                    <h3 className="text-lg font-extralight tracking-tight mb-4">Quick Actions</h3>
-                    <div className="space-y-3">
-                      <button 
-                        onClick={() => {
-                          // This will open a wallet connection modal for sending tips
-                          console.error('Connect your wallet to send tips');
-                        }}
-                        className="w-full bg-blue-500 hover:bg-blue-600 text-white py-3 px-4 rounded-lg transition-colors font-light tracking-tight"
-                      >
-                        Send Tip
-                      </button>
-                      <button className="w-full border border-white/20 hover:bg-white/10 text-white py-3 px-4 rounded-lg transition-colors font-light tracking-tight">
-                        Set Auto-Pay Rule
-                      </button>
-                      <button className="w-full border border-white/20 hover:bg-white/10 text-white py-3 px-4 rounded-lg transition-colors font-light tracking-tight">
-                        View Giveaways
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-sm">
-                    <h3 className="text-lg font-extralight tracking-tight mb-4">Recent Activity</h3>
-                    <div className="space-y-3">
-                      {history.slice(0, 3).map((tx, idx) => (
-                        <div key={idx} className="flex items-center justify-between py-2">
-                          <div className="flex items-center space-x-3">
-                            <div className={`w-2 h-2 rounded-full ${
-                              tx.type === 'transfer' ? 'bg-red-500' : 'bg-green-500'
-                            }`} />
-                            <span className="text-sm font-light">
-                              {tx.type === 'transfer' ? 'Sent' : 'Received'} {formatAmount(tx.amount, tx.token)}
-                            </span>
-                          </div>
-                          <span className="text-xs text-white/60 font-light">
-                            {formatDate(new Date(tx.date))}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-sm">
-                    <h3 className="text-lg font-extralight tracking-tight mb-4">Auto-Pay Rules</h3>
-                    <div className="space-y-3">
-                      <div className="text-sm text-white/60 font-light">No rules yet</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'transactions' && (
-              <div className="space-y-6">
-                {/* Pending Tips Section */}
-                {pendingTips.length > 0 && (
-                  <div className="bg-white/5 border border-white/10 rounded-xl overflow-hidden">
-                    <div className="p-6 border-b border-white/10">
-                      <h3 className="text-lg font-semibold text-yellow-400">Pending Tips to Claim</h3>
-                      <p className="text-sm text-white/70 mt-1">Tips sent to you on X that need to be claimed</p>
-                    </div>
-                    <div className="divide-y divide-white/10">
-                      {pendingTips.map((tip) => (
-                        <div key={tip.id} className="p-6 hover:bg-white/5 transition-colors">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center space-x-4">
-                              <div className="w-10 h-10 rounded-full bg-yellow-500/20 flex items-center justify-center">
-                                <span className="text-lg">💰</span>
-                              </div>
-                              <div>
-                                <div className="font-medium">
-                                  Received from {tip.sender}
-                                </div>
-                                <div className="text-sm text-white/60">
-                                  {formatDate(tip.timestamp)} • Tweet #{tip.tweetId}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex items-center space-x-4">
-                              <div className="text-right">
-                                <div className="font-medium text-yellow-400">
-                                  +{formatAmount(tip.amount, tip.token)}
-                                </div>
-                                <div className="text-sm text-white/60 capitalize">
-                                  {tip.status}
-                                </div>
-                              </div>
-                              <button
-                                onClick={() => claimTip(tip.id)}
-                                className="bg-yellow-500 hover:bg-yellow-600 text-white py-2 px-4 rounded-lg transition-colors"
-                              >
-                                Claim
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Transaction History */}
-                <div className="bg-white/5 border border-white/10 rounded-xl overflow-hidden backdrop-blur-sm">
-                  <div className="p-6 border-b border-white/10">
-                    <h3 className="text-lg font-extralight tracking-tight">Transaction History</h3>
-                  </div>
-                  <div className="divide-y divide-white/10">
-                    {history.map((tx, idx) => (
-                      <div key={idx} className="p-6 hover:bg-white/5 transition-colors">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-4">
-                            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                              tx.type === 'transfer' ? 'bg-red-500/20' : 'bg-green-500/20'
-                            }`}>
-                              <span className="text-lg">
-                                {tx.type === 'transfer' ? '↗️' : '↙️'}
-                              </span>
-                            </div>
-                            <div>
-                              <div className="font-light">
-                                {tx.type === 'transfer' ? 'Sent to' : 'Received from'} {tx.counterparty}
-                              </div>
-                              <div className="text-sm text-white/60 font-light">
-                                {formatDate(new Date(tx.date))} • 
-                                <a 
-                                  href={`https://solscan.io/tx/${tx.txHash}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-blue-400 hover:text-blue-300 ml-1"
-                                >
-                                  {tx.txHash}
-                                </a>
-                              </div>
-                            </div>
-                          </div>
-                          <div className="text-right">
-                            <div className={`font-light ${
-                              tx.type === 'transfer' ? 'text-red-400' : 'text-green-400'
-                            }`}>
-                              {tx.type === 'transfer' ? '-' : '+'}{formatAmount(tx.amount, tx.token)}
-                            </div>
-                            <div className="text-sm text-white/60 capitalize font-light">
-                              {tx.type}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'auto-pay' && (
-              <div className="space-y-6">
-                <div className="flex justify-between items-center">
-                  <h3 className="text-lg font-extralight tracking-tight">Auto-Pay Rules</h3>
-                  <button className="bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded-lg transition-colors font-light tracking-tight">
-                    Create Rule
-                  </button>
-                </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-sm">
-                    <div className="text-white/60 text-sm">No rules yet</div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'settings' && (
-              <div className="space-y-6">
-                <h3 className="text-lg font-extralight tracking-tight">Settings</h3>
-                
-                <div className="bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-sm">
-                  <h4 className="font-light mb-4">X (Twitter) Integration</h4>
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="font-light">
-                          {user ? 'Account Connected' : 'Connect Account'}
-                        </div>
-                        <div className="text-sm text-white/70 font-light">
-                          {user ? 
-                            `Connected: ${userData?.handle} - Tip wallet auto-created` :
-                            'Link your X account to get started'
-                          }
-                        </div>
-                      </div>
-                      {user ? (
-                        <div className="flex items-center space-x-2 text-green-400">
-                          <span className="text-sm">✓ Connected</span>
-                        </div>
-                      ) : (
-                        <button 
-                          onClick={() => login()}
-                          className="bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded-lg transition-colors"
-                        >
-                          Connect
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-sm">
-                  <h4 className="font-light mb-4">Wallet Tools</h4>
-                  <div className="space-y-3">
-                    <button
-                      onClick={() => setShowWithdraw(true)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded-lg transition-colors font-light tracking-tight w-full"
-                    >
-                      Withdraw SOL from Tip Wallet
-                    </button>
-                    <div className="text-xs text-white/60 mb-3">
-                      Transfer SOL from your tip wallet to another address
-                    </div>
-                    <button
-                      onClick={async () => {
-                        try {
-                          if (!userData?.handle) return;
-                          const res = await fetch('/api/wallet/export', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ handle: userData.handle })
-                          });
-                          const data = await res.json();
-                          if (!res.ok || !data.success) {
-                            console.error('Export failed:', data.error || 'Unknown error');
-                            return;
-                          }
-                          const blob = new Blob([
-                            JSON.stringify({
-                              address: data.walletAddress,
-                              privateKeyHex: data.privateKeyHex,
-                              note: 'Keep this file secret. Anyone with this key can spend your funds.'
-                            }, null, 2)
-                          ], { type: 'application/json' });
-                          const url = URL.createObjectURL(blob);
-                          const a = document.createElement('a');
-                          a.href = url;
-                          a.download = 'pourboire-wallet-export.json';
-                          a.click();
-                          URL.revokeObjectURL(url);
-                        } catch (e) {
-                          console.error('export error', e);
-                        }
-                      }}
-                      className="bg-red-500/90 hover:bg-red-600 text-white py-2 px-4 rounded-lg transition-colors font-light tracking-tight w-full"
-                    >
-                      Export Custodial Wallet (Dev only)
-                    </button>
-                    <div className="text-xs text-white/60">Only available in development and for custodial wallets.</div>
-                  </div>
-                </div>
-
-                <div className="bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-sm">
-                  <h4 className="font-light mb-4">Notification Preferences</h4>
-                  <div className="space-y-4">
-                    <label className="flex items-center space-x-3">
-                      <input type="checkbox" className="w-4 h-4 text-blue-500 rounded" defaultChecked />
-                      <span className="font-light">Email notifications for received tips</span>
-                    </label>
-                    <label className="flex items-center space-x-3">
-                      <input type="checkbox" className="w-4 h-4 text-blue-500 rounded" defaultChecked />
-                      <span className="font-light">Push notifications for auto-pay triggers</span>
-                    </label>
-                    <label className="flex items-center space-x-3">
-                      <input type="checkbox" className="w-4 h-4 text-blue-500 rounded" />
-                      <span className="font-light">Weekly summary emails</span>
-                    </label>
-                  </div>
-                </div>
-              </div>
+            {tab === 'overview' ? (
+              <Overview data={data} onOpenActivity={() => setTab('activity')} />
+            ) : (
+              <Activity history={data.history} truncated={data.historyTruncated} />
             )}
           </>
         )}
-      </div>
-      </div>
-      {showFund && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 w-full max-w-md text-white">
-            <h3 className="text-xl font-extralight mb-2">Fund Tip Account</h3>
-            <p className="text-white/70 text-sm mb-4">Send SOL to your deposit address. This funds your tipping account.</p>
-            <button
-              onClick={() => { if (tipAddress) { navigator.clipboard.writeText(tipAddress); setCopied(true); setTimeout(()=>setCopied(false),1000); }}}
-              className="bg-black/50 rounded-xl px-4 py-3 font-mono text-sm w-full text-left hover:bg-black/60 transition"
-              title="Copy"
-            >
-              {tipAddress ? formatAddress(tipAddress) : '...'}
-            </button>
-            <div className="mt-4 flex items-center gap-3">
-              {tipAddress && (
-                <a href={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent('solana:'+tipAddress)}`} target="_blank" rel="noreferrer" className="px-3 py-2 border border-white/20 rounded-lg hover:bg-white/10 transition">QR</a>
-              )}
-              <div className="flex-1" />
-              <button onClick={() => setShowFund(false)} className="px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg">Close</button>
-            </div>
-            <div className="mt-4">
-              <label className="text-sm text-white/70">Amount (SOL)</label>
-              <input value={fundAmount} onChange={(e)=>setFundAmount(e.target.value)} placeholder="e.g. 0.5" className="mt-1 w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 outline-none" />
-              {tipAddress && (
-                <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <DynamicWalletMultiButton className="w-full !bg-purple-600 hover:!bg-purple-700 !text-white !rounded-lg !h-11" />
-                  <button
-                    onClick={async () => {
-                      if (!publicKey || !sendTransaction || !tipAddress) return;
-                      try {
-                        const conn = new Connection(rpcEndpoint);
-                        const amountLamports = Math.floor((Number(fundAmount)||0) * LAMPORTS_PER_SOL);
+      </main>
 
-                        const sendOnce = async (): Promise<string> => {
-                          const tx = new Transaction({ feePayer: publicKey }).add(
-                            SystemProgram.transfer({
-                              fromPubkey: publicKey,
-                              toPubkey: new PublicKey(tipAddress),
-                              lamports: amountLamports
-                            })
-                          );
-                          return await sendTransaction(tx, conn, { preflightCommitment: 'confirmed', maxRetries: 3 });
-                        };
-
-                        const waitFor = async (sig: string): Promise<boolean> => {
-                          const start = Date.now();
-                          while (Date.now() - start < 60000) {
-                            const st = await (conn as any).getSignatureStatuses([sig], { searchTransactionHistory: true });
-                            const v = st?.value?.[0];
-                            if (v?.err) {
-                              throw new Error('Transaction failed');
-                            }
-                            if (v?.confirmationStatus === 'confirmed' || v?.confirmationStatus === 'finalized') return true;
-                            await new Promise(r => setTimeout(r, 1500));
-                          }
-                          return false;
-                        };
-
-                        // First attempt
-                        let sig = await sendOnce();
-                        let ok = await waitFor(sig);
-
-                        // One automatic retry if not confirmed in time
-                        if (!ok) {
-                          sig = await sendOnce();
-                          ok = await waitFor(sig);
-                        }
-
-                        if (!ok) throw new Error(`Timeout waiting for confirmation. Signature: ${sig}`);
-
-                        await fetchWalletBalance(tipAddress);
-                        setShowFund(false);
-                      } catch (e: any) {
-                        const msg = e?.message || String(e);
-                        if (msg.includes('403') || msg.toLowerCase().includes('forbidden')) {
-                          console.error('RPC blocked request (403). Set NEXT_PUBLIC_SOLANA_RPC_URL to a provider RPC with an API key (e.g. Helius, QuickNode, Triton) and reload.');
-                        }
-                        if (msg.toLowerCase().includes('debit') || msg.toLowerCase().includes('insufficient')) {
-                          console.error('Insufficient funds: Connected wallet needs sufficient SOL to cover network fee and amount.');
-                        }
-                        console.error('Transfer failed:', msg);
-                        if (typeof (e as any)?.getLogs === 'function') {
-                          try { console.error('transaction logs', await (e as any).getLogs()); } catch {}
-                        }
-                        console.error('transfer error', e);
-                      }
-                    }}
-                    className="w-full px-3 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg disabled:opacity-50"
-                    disabled={!connected || !fundAmount}
-                  >
-                    Transfer to Tip Wallet
-                  </button>
-                  <a
-                    href={`https://phantom.app/ul/transfer?recipient=${encodeURIComponent(tipAddress)}&amount=${encodeURIComponent(fundAmount || '')}&label=Pourboire&message=Fund%20tip%20account`}
-                    target="_blank" rel="noreferrer"
-                    className="w-full px-3 py-2 border border-white/20 hover:bg-white/10 rounded-lg inline-flex items-center justify-center"
-                  >
-                    Open Wallet (Deep Link)
-                  </a>
-                </div>
-              )}
-            </div>
-            
-          </div>
-        </div>
+      {/* Rendered only while open, so each dialog gets fresh state on mount
+          instead of clearing itself in an effect. */}
+      {wallet?.address && fundOpen && (
+        <FundDialog
+          onClose={() => setFundOpen(false)}
+          address={wallet.address}
+          onFunded={() => refresh()}
+        />
       )}
-      {showWithdraw && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-white/5 border border-white/10 rounded-2xl p-6 w-full max-w-md text-white">
-            <h3 className="text-xl font-extralight mb-2">Withdraw SOL from Tip Wallet</h3>
-            <p className="text-white/70 text-sm mb-4">
-              Transfer SOL from your custodial tip wallet to another address
-            </p>
-            <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-              <p className="text-yellow-400/90 text-xs">
-                ⚠️ Remember to leave a small amount of SOL (~0.001 SOL) in your tip wallet for transaction fees
-              </p>
-            </div>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm text-white/70 mb-1 block">Amount (SOL)</label>
-                <input
-                  value={withdrawAmount}
-                  onChange={(e) => setWithdrawAmount(e.target.value)}
-                  placeholder="e.g. 0.5"
-                  className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 outline-none"
-                  disabled={withdrawing}
-                />
-              </div>
-              
-              <div>
-                <label className="text-sm text-white/70 mb-1 block">Recipient Address</label>
-                <input
-                  value={withdrawAddress}
-                  onChange={(e) => setWithdrawAddress(e.target.value)}
-                  placeholder="Enter Solana address"
-                  className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 outline-none font-mono text-sm"
-                  disabled={withdrawing}
-                />
-                {connected && publicKey && (
-                  <button
-                    onClick={() => setWithdrawAddress(publicKey.toString())}
-                    className="mt-2 text-xs text-blue-400 hover:text-blue-300"
-                    disabled={withdrawing}
-                  >
-                    Use Connected Wallet
-                  </button>
-                )}
-              </div>
-              
-              <div className="flex gap-3">
-                <button
-                  onClick={() => {
-                    setShowWithdraw(false);
-                    setWithdrawAmount("");
-                    setWithdrawAddress("");
-                  }}
-                  className="flex-1 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors"
-                  disabled={withdrawing}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={async () => {
-                    if (!userData?.handle || !withdrawAmount || !withdrawAddress) {
-                      console.error('Withdraw: Missing required fields');
-                      return;
-                    }
-                    
-                    setWithdrawing(true);
-                    try {
-                      const res = await fetch('/api/wallet/withdraw', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          handle: userData.handle,
-                          amount: withdrawAmount,
-                          toAddress: withdrawAddress
-                        })
-                      });
-                      
-                      const data = await res.json();
-                      
-                      if (!res.ok) {
-                        const errorMsg = data.details || data.error || 'Withdrawal failed';
-                        console.error('Withdraw failed:', errorMsg);
-                        return;
-                      }
-                      
-                      console.log(`Withdrawal successful! Tx: ${data.txHash}\n\nView on Solscan: ${data.solscanUrl}`);
-                      
-                      // Refresh balance and history
-                      if (tipAddress) {
-                        await fetchWalletBalance(tipAddress);
-                        await fetchPendingAndHistory(tipAddress);
-                      }
-                      
-                      setShowWithdraw(false);
-                      setWithdrawAmount("");
-                      setWithdrawAddress("");
-                    } catch (e: any) {
-                      console.error('withdraw error', e);
-                    } finally {
-                      setWithdrawing(false);
-                    }
-                  }}
-                  className="flex-1 px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg transition-colors disabled:opacity-50"
-                  disabled={withdrawing || !withdrawAmount || !withdrawAddress}
-                >
-                  {withdrawing ? 'Processing...' : 'Withdraw'}
-                </button>
-              </div>
-              
-              {tipAddress && (
-                <div className="mt-4 p-3 bg-black/40 rounded-lg">
-                  <div className="text-xs text-white/70 mb-1">Tip Wallet Balance</div>
-                  <div className="text-sm font-mono">{balance.toFixed(4)} SOL</div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+      {wallet?.address && withdrawOpen && (
+        <WithdrawDialog
+          onClose={() => setWithdrawOpen(false)}
+          maxSol={wallet.balanceSol ?? 0}
+          onWithdrawn={() => refresh()}
+        />
       )}
     </div>
   );
+}
+
+/* ---------------------------------------------------------------- sections */
+
+function BackgroundGlow() {
+  return (
+    <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden">
+      <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-black to-black" />
+      <div className="absolute -right-24 -top-24 h-96 w-96 rounded-full bg-purple-500/20 blur-3xl" />
+      <div className="absolute -bottom-24 -left-24 h-80 w-80 rounded-full bg-blue-500/15 blur-3xl" />
+    </div>
+  );
+}
+
+function FullScreenStatus({ message }: { message: string }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-black text-white">
+      <div className="text-center">
+        <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-white motion-reduce:animate-none" />
+        <p role="status" className="font-light text-white/70">
+          {message}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SignedOut({ onLogin }: { onLogin: () => void }) {
+  return (
+    <div className="mx-auto max-w-lg py-12 text-center sm:py-20">
+      <h1 className="text-3xl font-extralight tracking-tight">Your tip wallet</h1>
+      <p className="mx-auto mt-4 max-w-md text-sm font-light leading-relaxed text-white/70">
+        Sign in with X to see tips people have sent you, fund your wallet, and send tips of your
+        own. If someone already tipped you, it is waiting.
+      </p>
+      <button
+        type="button"
+        onClick={onLogin}
+        className="mt-8 rounded-xl bg-blue-500 px-8 py-3 text-base font-light tracking-tight transition hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+      >
+        Sign in with X
+      </button>
+      <p className="mt-6 text-xs font-light text-white/40">
+        Email and wallet sign-in also work.
+      </p>
+    </div>
+  );
+}
+
+function NeedsTwitter() {
+  return (
+    <div className="mx-auto max-w-lg rounded-2xl border border-amber-400/20 bg-amber-500/10 p-8 text-center">
+      <h2 className="text-xl font-extralight tracking-tight">Link your X account</h2>
+      <p className="mt-3 text-sm font-light leading-relaxed text-white/70">
+        Tips are addressed to an X handle, so we need yours before we can set up a tip wallet.
+        Open the account menu and connect X to continue.
+      </p>
+    </div>
+  );
+}
+
+function LoadFailed({ message, onRetry }: { message: string | null; onRetry: () => void }) {
+  return (
+    <div
+      role="alert"
+      className="mx-auto max-w-lg rounded-2xl border border-red-400/20 bg-red-500/10 p-8 text-center"
+    >
+      <h2 className="text-xl font-extralight tracking-tight">Could not load your dashboard</h2>
+      <p className="mt-3 text-sm font-light leading-relaxed text-white/70">
+        {message ?? 'Something went wrong.'}
+      </p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-6 rounded-xl bg-white/10 px-5 py-2.5 text-sm font-light transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+      >
+        Try again
+      </button>
+    </div>
+  );
+}
+
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="h-32 animate-pulse rounded-2xl bg-white/5 motion-reduce:animate-none" />
+      <div className="h-40 animate-pulse rounded-2xl bg-white/5 motion-reduce:animate-none" />
+      <div className="h-12 w-64 animate-pulse rounded-xl bg-white/5 motion-reduce:animate-none" />
+      <span className="sr-only" role="status">
+        Loading your dashboard
+      </span>
+    </div>
+  );
+}
+
+function ProfileCard({
+  user,
+  walletAddress,
+  privyEmail,
+}: {
+  user: MeResponse['user'];
+  walletAddress: string | null;
+  privyEmail?: string;
+}) {
+  if (!user) return null;
+  const fallback = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || user.handle)}&background=3B82F6&color=fff`;
+
+  return (
+    <section className="rounded-2xl border border-white/10 bg-gradient-to-r from-purple-500/10 to-blue-500/10 p-5 backdrop-blur-sm sm:p-8">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:gap-6">
+        {/* eslint-disable-next-line @next/next/no-img-element -- remote avatar hosts vary; next/image would need each one allow-listed */}
+        <img
+          src={user.profileImage || fallback}
+          alt=""
+          width={72}
+          height={72}
+          className="h-16 w-16 shrink-0 rounded-full border-2 border-white/20 object-cover sm:h-18 sm:w-18"
+        />
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-2xl font-extralight tracking-tight sm:text-3xl">
+            {user.name || user.handle}
+          </h1>
+          <p className="truncate text-base font-light text-blue-300">{user.handle}</p>
+          {privyEmail && <p className="truncate text-xs font-light text-white/40">{privyEmail}</p>}
+        </div>
+        {walletAddress && (
+          <div className="shrink-0 sm:text-right">
+            <div className="mb-1 text-xs font-light tracking-tight text-white/60">
+              Tip wallet
+            </div>
+            <CopyButton value={walletAddress} describe="tip wallet address" />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function BalanceCard({
+  balanceLabel,
+  unavailable,
+  onFund,
+  onWithdraw,
+  onRetry,
+  canWithdraw,
+}: {
+  balanceLabel: string | null;
+  unavailable: boolean;
+  onFund: () => void;
+  onWithdraw: () => void;
+  onRetry: () => void;
+  canWithdraw: boolean;
+}) {
+  return (
+    <section className="mt-6 rounded-2xl border border-white/10 bg-gradient-to-r from-purple-500/10 to-blue-500/10 p-5 backdrop-blur-sm sm:p-8">
+      <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h2 className="text-sm font-light uppercase tracking-wide text-white/60">
+            Tip wallet balance
+          </h2>
+          {unavailable ? (
+            // Never render "0.0000 SOL" for a failed lookup. The old code
+            // swallowed the error and left the balance at its initial 0.
+            <div className="mt-2">
+              <p className="text-2xl font-extralight tracking-tight text-white/60">Unavailable</p>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-1 text-xs font-light text-blue-300 underline underline-offset-2 hover:text-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 rounded"
+              >
+                Couldn&apos;t reach the network — retry
+              </button>
+            </div>
+          ) : (
+            <p className="mt-2 text-4xl font-extralight tracking-tight tabular-nums">
+              {balanceLabel} <span className="text-2xl text-white/50">SOL</span>
+            </p>
+          )}
+        </div>
+
+        <div className="flex shrink-0 flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={onFund}
+            className="flex-1 rounded-xl bg-blue-500 px-5 py-3 text-sm font-light tracking-tight transition hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 sm:flex-none"
+          >
+            Add funds
+          </button>
+          <button
+            type="button"
+            onClick={onWithdraw}
+            disabled={!canWithdraw}
+            title={canWithdraw ? undefined : 'Nothing to withdraw yet'}
+            className="flex-1 rounded-xl border border-white/15 px-5 py-3 text-sm font-light tracking-tight transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none"
+          >
+            Withdraw
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Overview({ data, onOpenActivity }: { data: MeResponse; onOpenActivity: () => void }) {
+  return (
+    <div className="space-y-6">
+      {data.pending.length > 0 && (
+        <section className="rounded-xl border border-amber-400/20 bg-amber-500/10 p-5">
+          <h2 className="text-base font-light text-amber-200">
+            {data.pending.length === 1 ? '1 tip on the way' : `${data.pending.length} tips on the way`}
+          </h2>
+          <p className="mt-1 text-sm font-light leading-relaxed text-amber-100/70">
+            These were sent to you on X but haven&apos;t settled yet — usually because the sender
+            still needs to fund their tip wallet. They arrive automatically, there is nothing for
+            you to do.
+          </p>
+          <ul className="mt-4 space-y-2">
+            {data.pending.slice(0, 4).map((p) => (
+              <li
+                key={p.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-black/20 px-3 py-2 text-sm"
+              >
+                <span className="font-light text-white/80">from {p.sender}</span>
+                <span className="font-medium tabular-nums text-amber-200">
+                  {p.amount} {p.token}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <section className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur-sm">
+          <h2 className="mb-3 text-base font-light tracking-tight">How to send a tip</h2>
+          <p className="text-sm font-light leading-relaxed text-white/70">
+            Reply to any post on X with:
+          </p>
+          <code className="mt-3 block break-words rounded-lg bg-black/40 px-3 py-2 font-mono text-sm text-blue-200">
+            {exampleCommand(0.5)}
+          </code>
+          <p className="mt-3 text-xs font-light leading-relaxed text-white/50">
+            The tip goes to whoever wrote the post. Add a handle — {exampleCommand(0.5)} @someone —
+            to send it elsewhere. Your tip wallet needs the funds first.
+          </p>
+        </section>
+
+        <section className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur-sm">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-base font-light tracking-tight">Recent activity</h2>
+            {data.history.length > 0 && (
+              <button
+                type="button"
+                onClick={onOpenActivity}
+                className="rounded text-xs font-light text-blue-300 hover:text-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              >
+                See all
+              </button>
+            )}
+          </div>
+          {data.history.length === 0 ? (
+            <EmptyState
+              title="Nothing yet"
+              body="Tips you send and receive will show up here."
+            />
+          ) : (
+            <ul className="space-y-2">
+              {/* Newest first — the server now sorts, where the old code sliced
+                  the first three of an insertion-ordered array, i.e. the oldest. */}
+              {data.history.slice(0, 4).map((tx, i) => (
+                <li key={`${tx.txHash}-${i}`} className="flex items-center justify-between gap-3 py-1">
+                  <span className="flex min-w-0 items-center gap-2 text-sm font-light">
+                    <span
+                      aria-hidden
+                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                        tx.direction === 'out' ? 'bg-red-400' : 'bg-emerald-400'
+                      }`}
+                    />
+                    <span className="truncate">
+                      {tx.direction === 'out' ? 'Sent' : 'Received'} {tx.amount} {tx.token}
+                    </span>
+                  </span>
+                  <time
+                    dateTime={new Date(tx.date).toISOString()}
+                    className="shrink-0 text-xs font-light text-white/50"
+                  >
+                    {formatDate(tx.date)}
+                  </time>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Activity({ history, truncated }: { history: HistoryItem[]; truncated?: boolean }) {
+  if (history.length === 0) {
+    return (
+      <section className="rounded-xl border border-white/10 bg-white/5 p-10">
+        <EmptyState
+          title="No transactions yet"
+          body="Once you send or receive a tip, it will appear here with a link to the transaction."
+        />
+      </section>
+    );
+  }
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-white/10 bg-white/5 backdrop-blur-sm">
+      <ul className="divide-y divide-white/10">
+        {history.map((tx, i) => (
+          <li key={`${tx.txHash}-${i}`} className="p-4 transition hover:bg-white/5 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <span
+                  aria-hidden
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm ${
+                    tx.direction === 'out'
+                      ? 'bg-red-500/15 text-red-300'
+                      : 'bg-emerald-500/15 text-emerald-300'
+                  }`}
+                >
+                  {tx.direction === 'out' ? 'â†‘' : 'â†“'}
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-light">
+                    {tx.direction === 'out' ? 'Sent to' : 'Received from'}{' '}
+                    <span className="text-white/90">{formatCounterparty(tx.counterparty)}</span>
+                  </p>
+                  <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs font-light text-white/50">
+                    <time dateTime={new Date(tx.date).toISOString()}>{formatDate(tx.date)}</time>
+                    <span aria-hidden>Â·</span>
+                    <a
+                      href={tx.explorerUrl ?? `https://solscan.io/tx/${tx.txHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded font-mono text-blue-300 hover:text-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                    >
+                      {/* Truncated: a full 88-character signature used to be
+                          rendered inline and blew the row out of the viewport. */}
+                      {truncateMiddle(tx.txHash, 6, 6)}
+                    </a>
+                    {tx.status === 'unconfirmed' && (
+                      <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
+                        Unconfirmed
+                      </span>
+                    )}
+                  </p>
+                </div>
+              </div>
+              <p
+                className={`shrink-0 text-sm font-light tabular-nums ${
+                  tx.direction === 'out' ? 'text-red-300' : 'text-emerald-300'
+                }`}
+              >
+                {tx.direction === 'out' ? 'âˆ’' : '+'}
+                {tx.amount} {tx.token}
+              </p>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {truncated && (
+        <p className="border-t border-white/10 px-5 py-3 text-xs font-light text-white/40">
+          Showing your most recent 100 transactions.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function EmptyState({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="py-4 text-center">
+      <p className="text-sm font-light text-white/70">{title}</p>
+      <p className="mx-auto mt-1 max-w-xs text-xs font-light leading-relaxed text-white/40">
+        {body}
+      </p>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ format */
+
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+});
+
+function formatDate(value: string | Date): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return dateFormatter.format(date);
+}
+
+/** Counterparties are either an @handle or a raw address; only truncate addresses. */
+function formatCounterparty(value: string): string {
+  return value.startsWith('@') ? value : truncateMiddle(value, 4, 4);
 }

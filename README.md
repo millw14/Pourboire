@@ -1,255 +1,144 @@
-# Pourboire - Tip anyone on X with Solana
+# Pourboire
 
-A complete decentralized application (dApp) that enables instant tips and donations on X (Twitter) using Solana blockchain. Built with Next.js, TypeScript, and featuring a stunning neural network hero component.
-
-## 🚀 Features
-
-### Core Functionality
-- **Instant Tips**: Send SOL or USDC to any X post with a simple @Pourboire mention
-- **Auto-Pay Features**: Set up automatic tipping rules for followers, replies, or giveaways
-- **Zero Fees**: Only pay Solana network fees (~0.000005 SOL per transaction)
-- **x402 Integration**: Powered by x402 for instant micropayments and premium features
-- **Custodial Wallets**: Auto-create wallets for recipients who haven't connected yet
-- **Smart Giveaways**: Pick random winners, highest likes, or first N replies automatically
-
-### Technical Features
-- **Neural Network Hero**: Beautiful animated background with custom CPPN shader
-- **3D Phone Tutorial**: Interactive 3D phone showing how to use Pourboire
-- **Real-time Dashboard**: Connect wallet, view transactions, manage auto-pay rules
-- **Responsive Design**: Works perfectly on all devices
-- **TypeScript**: Fully typed for better development experience
-
-## 🏗️ Architecture
-
-### Frontend (Next.js)
-- **Landing Page**: Neural network hero with 3D phone tutorial
-- **Dashboard**: User profile, transaction history, auto-pay management
-- **Wallet Integration**: Solana wallet adapter with multiple wallet support
-- **Real-time Updates**: Live transaction status and balance updates
-
-### Backend (Node.js)
-- **Twitter API Integration**: Monitor mentions and process tip commands
-- **Solana Integration**: Send SOL/USDC transactions
-- **MongoDB**: Store user data, transactions, and auto-pay rules
-- **Cron Jobs**: Poll Twitter every 2 minutes for new mentions
-- **Encryption**: Secure storage of custodial wallet private keys
-
-### Smart Contracts (Anchor/Rust)
-- **Escrow Contract**: Hold unclaimed tips until recipients claim them
-- **Multi-token Support**: Handle both SOL and SPL tokens (USDC)
-- **Security**: Time-locked and authority-controlled escrow system
-
-## 🛠️ Tech Stack
-
-### Frontend
-- **Next.js 16** with App Router
-- **TypeScript** for type safety
-- **Tailwind CSS** for styling
-- **shadcn/ui** component library
-- **Three.js** for 3D graphics
-- **GSAP** for animations
-- **React Three Fiber** for React integration
-- **Solana Wallet Adapter** for wallet connectivity
-
-### Backend
-- **Node.js** with Express
-- **MongoDB** with Mongoose
-- **Twitter API v2** for social media integration
-- **Solana Web3.js** for blockchain interactions
-- **libsodium** for encryption
-- **Jupiter API** for token swaps
-- **node-cron** for scheduled tasks
-
-### Blockchain
-- **Solana** for fast, low-cost transactions
-- **Anchor** for smart contract development
-- **Rust** for contract programming
-- **x402** for micropayment protocols
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Node.js 18+ 
-- MongoDB
-- Solana CLI
-- Anchor CLI
-- Twitter API access (Basic tier recommended)
-
-### Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd meridian2.0
-   ```
-
-2. **Install frontend dependencies**:
-   ```bash
-   npm install
-   ```
-
-3. **Install backend dependencies**:
-   ```bash
-   cp package-server.json package.json
-   npm install
-   ```
-
-4. **Set up environment variables**:
-   ```bash
-   cp .env.example .env.local
-   # Edit .env.local with your API keys
-   ```
-
-5. **Start the development servers**:
-   ```bash
-   # Terminal 1: Frontend
-   npm run dev
-   
-   # Terminal 2: Backend
-   npm run dev
-   ```
-
-### Environment Variables
-
-Create a `.env.local` file with:
-
-```env
-# Twitter API
-TWITTER_API_KEY=your_twitter_api_key
-TWITTER_API_SECRET=your_twitter_api_secret
-TWITTER_ACCESS_TOKEN=your_twitter_access_token
-TWITTER_ACCESS_SECRET=your_twitter_access_secret
-
-# Solana
-SOLANA_RPC_URL=https://api.devnet.solana.com
-ENCRYPTION_PASSWORD=your_encryption_password
-
-# MongoDB
-MONGODB_URI=mongodb://localhost:27017/soltip
-
-# Server
-PORT=3001
-```
-
-## 📱 Usage
-
-### For Users
-
-1. **Connect Wallet**: Visit the dashboard and connect your Solana wallet
-2. **Send Tips**: Reply to any X post with `@Pourboire tip 0.5 SOL`
-3. **Set Auto-Pay**: Configure automatic tipping rules in the dashboard
-4. **Run Giveaways**: Use `@Pourboire pick random 5 replies and tip 0.1 SOL`
-
-### For Developers
-
-1. **Customize UI**: Modify components in `src/components/ui/`
-2. **Add Features**: Extend the backend API in `server.js`
-3. **Deploy Contracts**: Use Anchor to deploy to Solana
-4. **Monitor**: Check logs and transaction status
-
-## 🎨 UI Components
-
-### Neural Network Hero
-- **Custom CPPN Shader**: Complex neural network generating animated patterns
-- **GSAP Animations**: Smooth text reveals and transitions
-- **Responsive Design**: Adapts to all screen sizes
-
-### 3D Phone Tutorial
-- **Interactive 3D Model**: Shows how to use Pourboire on mobile
-- **Floating Labels**: Step-by-step instructions
-- **Smooth Animations**: GSAP-powered transitions
-
-### Dashboard
-- **Wallet Integration**: Connect multiple Solana wallets
-- **Transaction History**: View all sent/received tips
-- **Auto-Pay Management**: Create and manage tipping rules
-- **Real-time Updates**: Live balance and transaction status
-
-## 🔧 Development
-
-### Frontend Commands
-```bash
-npm run dev          # Start development server
-npm run build        # Build for production
-npm run start        # Start production server
-npm run lint         # Run ESLint
-```
-
-### Backend Commands
-```bash
-npm run dev          # Start with nodemon
-npm start            # Start production server
-npm test             # Run tests
-```
-
-### Smart Contract Commands
-```bash
-anchor build         # Build the program
-anchor deploy        # Deploy to devnet
-anchor test          # Run tests
-```
-
-## 🚀 Deployment
-
-### Frontend (Vercel)
-1. Connect your GitHub repository to Vercel
-2. Set environment variables in Vercel dashboard
-3. Deploy automatically on push to main
-
-### Backend (Heroku/AWS)
-1. Create a new app on your hosting platform
-2. Set environment variables
-3. Deploy using Git or Docker
-
-### Smart Contracts (Solana)
-1. Build and deploy to devnet first
-2. Test thoroughly
-3. Deploy to mainnet-beta
-4. Update program ID in frontend
-
-## 🔒 Security
-
-- **Private Key Encryption**: All custodial keys encrypted with libsodium
-- **Rate Limiting**: Prevent spam and abuse
-- **Input Validation**: Sanitize all user inputs
-- **Smart Contract Audits**: Regular security reviews
-- **HTTPS Only**: All communications encrypted
-
-## 📊 Monitoring
-
-- **Transaction Tracking**: Monitor all blockchain transactions
-- **Error Logging**: Comprehensive error tracking
-- **Performance Metrics**: Monitor API response times
-- **User Analytics**: Track usage patterns (privacy-focused)
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🆘 Support
-
-- **Documentation**: Check the docs folder
-- **Issues**: Open an issue on GitHub
-- **Discord**: Join our community server
-- **Twitter**: Follow @Pourboire for updates
-
-## 🎯 Roadmap
-
-- [ ] Mobile app (React Native)
-- [ ] More token support (USDT, etc.)
-- [ ] Advanced auto-pay rules
-- [ ] Integration with other social platforms
-- [ ] NFT tipping support
-- [ ] Multi-language support
+Tip anyone on X with Solana. Reply to a post with `@Pourboireonsol tip 0.5 SOL` and the author
+gets the SOL — no wallet needed on their side. If they haven't signed up, the tip lands in a
+custodial wallet that becomes theirs when they do.
 
 ---
 
-**Built with ❤️ by the Pourboire team**
+## ⚠️ Read this before deploying
+
+This app holds **private keys for its users** in MongoDB, encrypted with a single symmetric key.
+That design puts a lot of weight on two things:
+
+1. **`ENCRYPTION_KEY` must never leak, and must never be lost.** Leaking it plus a database dump
+   is total compromise of every custodial wallet. Losing it makes every custodial wallet
+   permanently unspendable. Back it up somewhere other than the machine running the app.
+2. **Every route that can move money must verify the caller.** They all do now (see
+   [Authentication](#authentication)), but this is the invariant to protect in review.
+
+If you are picking this repo up after October 2025, assume the keys in any pre-existing database
+are compromised — the withdrawal endpoint was reachable without authentication, so plaintext keys
+were exposed through the API rather than through the ciphertext. Sweep to fresh keypairs; rotating
+`ENCRYPTION_KEY` alone is not sufficient.
+
+---
+
+## Requirements
+
+- Node.js 20+
+- A MongoDB database
+- A Privy app (authentication) — https://dashboard.privy.io
+- X/Twitter API credentials for the bot account
+- A Solana RPC endpoint (the public one is rate limited to the point of uselessness)
+
+## Setup
+
+```bash
+npm install
+cp env.example .env.local
+```
+
+Fill in `.env.local`. Every variable the code reads is documented in `env.example`; the two you
+must generate yourself:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # ENCRYPTION_KEY
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # CRON_SECRET
+```
+
+Then:
+
+```bash
+npm run dev
+```
+
+`npm run build` works without a database — nothing reads configuration at module scope, so a
+missing secret surfaces as a clear error on the route that needs it rather than a build failure.
+
+## Checks
+
+```bash
+npm run check      # typecheck + lint + tests
+```
+
+## Architecture
+
+```
+src/
+  app/
+    page.tsx              Landing page. No providers above it, so it ships no wallet code.
+    dashboard/            The only route that loads Privy + the Solana wallet adapter.
+    api/
+      me/                 GET  — everything the dashboard needs, one authenticated call
+      wallet/withdraw/    POST — move SOL out of the caller's own tip wallet
+      twitter/poll/       GET/POST — read mentions and settle tips (machine-authenticated)
+  lib/
+    auth.ts               Verifies Privy tokens. Identity never comes from the request body.
+    api.ts                One error shape; decides what detail leaks in production.
+    solana.ts             Transfers, confirmation, explorer links.
+    lamports.ts           Pure lamport arithmetic (unit-tested, no dependencies).
+    tip-command.ts        The tip syntax. Shared by the parser and the UI so they can't drift.
+    wallets.ts            Custodial wallet lifecycle. Never overwrites an existing key.
+    crypto.ts             libsodium secretbox around private keys.
+  models/
+    User.ts               Accounts, balances history, pending claims.
+    ProcessedTweet.ts     The idempotency ledger. One payout per tweet, ever.
+    PollCursor.ts         Server-side high-water mark for the mention search.
+```
+
+### Authentication
+
+| Caller | Mechanism |
+| --- | --- |
+| A signed-in person | Privy access token in `Authorization: Bearer`, verified against Privy, resolved to an account by immutable Twitter subject id — never by handle, which is renameable and spoofable. |
+| The scheduler | `CRON_SECRET` bearer token, compared in constant time. If the variable is unset the endpoint refuses every request rather than defaulting to open. |
+
+No route accepts an account identifier from its request body.
+
+### How tips settle
+
+1. Vercel Cron calls `/api/twitter/poll` (see `vercel.json`).
+2. The poller searches for mentions newer than the stored `PollCursor`.
+3. For each parsed tip, it **claims the tweet id in `ProcessedTweet` before attempting any
+   transfer.** The unique index makes that atomic, so overlapping runs cannot double-send.
+4. It transfers SOL from the sender's custodial wallet to the recipient's, creating the
+   recipient's wallet if they've never signed up.
+5. Tips that can't settle yet (sender unfunded, amount below the rent-exempt minimum) are marked
+   `pending` and retried on later runs. Tips that were submitted but not confirmed are marked
+   `unconfirmed` and **never retried** — the transaction may still land.
+
+### Scheduling
+
+`vercel.json` registers a cron for `/api/twitter/poll`. Vercel Cron sends `GET` with the
+`CRON_SECRET` attached automatically. **Sub-daily crons need a Vercel Pro plan** — on Hobby the
+schedule is clamped to once a day, so use an external scheduler hitting the same endpoint with
+`Authorization: Bearer $CRON_SECRET` if you're on Hobby.
+
+## Tip syntax
+
+All of these work, case-insensitively:
+
+```
+@Pourboireonsol tip 0.5 SOL          → tips the author of the post you replied to
+@Pourboireonsol tip 0.5 SOL @alice   → tips @alice
+@Pourboireonsol tip @alice 0.5       → same, token defaults to SOL
+```
+
+USDC parses but is not yet settled — the bot replies saying so rather than silently doing
+nothing. See `src/lib/tip-command.ts` and its tests.
+
+## Known limitations
+
+- **USDC tips are not implemented.** They are recognised and declined politely.
+- **Rate limiting is per-instance.** `src/lib/api.ts` blunts casual abuse and runaway retry
+  loops, but on serverless it is not a global limiter. Put a real one at the edge before any
+  volume.
+- **`programs/soltip` is not deployed or used.** It has a placeholder program id and the escrow
+  PDA cannot release SOL as written. Treat it as a sketch, not a component.
+- **The server holds custodial keys.** Moving unclaimed tips into an on-chain escrow would remove
+  the largest risk in the system; that work has not been done.
+
+## License
+
+MIT.

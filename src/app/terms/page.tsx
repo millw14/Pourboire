@@ -1,4 +1,7 @@
-'use client';
+import type { Metadata } from 'next';
+
+// Static text; no client bundle needed. See the note in privacy/page.tsx.
+export const metadata: Metadata = { title: 'Terms of Service' };
 
 export default function TermsOfServicePage() {
   return (
@@ -9,7 +12,7 @@ export default function TermsOfServicePage() {
 
         <section className="space-y-6 text-white/80 leading-relaxed">
           <p>
-            These Terms govern your access to and use of Pourboire (the "Service"). By using the Service,
+            These Terms govern your access to and use of Pourboire (the &ldquo;Service&rdquo;). By using the Service,
             you agree to these Terms.
           </p>
 
@@ -43,7 +46,7 @@ export default function TermsOfServicePage() {
 
           <h2 className="text-2xl text-white font-medium mt-8">No Warranties</h2>
           <p>
-            The Service is provided "as is" and "as available" without warranties of any kind, express or
+            The Service is provided &ldquo;as is&rdquo; and &ldquo;as available&rdquo; without warranties of any kind, express or
             implied, including merchantability, fitness for a particular purpose, and non-infringement.
           </p>
 

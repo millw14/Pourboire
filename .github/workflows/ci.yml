@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, smooth]
+  pull_request:
+
+# A repo that moves real SOL had no CI at all. These three jobs are the floor.
+jobs:
+  check:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run lint
+
+      - run: npm test
+
+      # Proves the build works without any secrets configured — the failure mode
+      # that made the original repo unbuildable from a clean clone.
+      - run: npm run build
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a live MongoDB credential was committed to this repo
+          # once, and scanning only the tip would not have caught it.
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

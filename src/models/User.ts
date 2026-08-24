@@ -2,23 +2,31 @@ import mongoose, { Document, Schema } from 'mongoose';
 
 export interface ITransaction {
   type: 'tip' | 'transfer';
+  /** Direction relative to this user, so history can be read without guessing. */
+  direction: 'in' | 'out';
   amount: number;
   token: 'SOL' | 'USDC';
   counterparty: string;
   txHash: string;
+  /** `unconfirmed` means submitted but not observed on-chain — never retry these. */
+  status: 'confirmed' | 'unconfirmed' | 'failed';
   date: Date;
 }
 
 export interface IPendingClaim {
   _id?: string;
   amount: number;
-  token: string;
+  token: 'SOL' | 'USDC';
+  /** The tweet the tip came from. */
   fromTx: string;
   sender: string;
+  createdAt: Date;
 }
 
 export interface IUser extends Document {
   twitterId: string;
+  /** Privy's user id, set once the person actually signs in. */
+  privyUserId?: string;
   handle: string;
   name: string;
   profileImage: string;
@@ -26,47 +34,62 @@ export interface IUser extends Document {
   walletAddress: string;
   encryptedPrivateKey?: string; // Only for custodial wallets
   isEmbedded: boolean;
+  /** False until the real owner has signed in and claimed this pre-created record. */
+  claimed: boolean;
   history: ITransaction[];
   pendingClaims: IPendingClaim[];
   createdAt: Date;
   updatedAt: Date;
 }
 
-const TransactionSchema = new Schema<ITransaction>({
-  type: { type: String, enum: ['tip', 'transfer'], required: true },
-  amount: { type: Number, required: true },
-  token: { type: String, enum: ['SOL', 'USDC'], required: true },
-  counterparty: { type: String, required: true },
-  txHash: { type: String, required: true },
-  date: { type: Date, default: Date.now }
-});
+const TransactionSchema = new Schema<ITransaction>(
+  {
+    type: { type: String, enum: ['tip', 'transfer'], required: true },
+    direction: { type: String, enum: ['in', 'out'], required: true },
+    amount: { type: Number, required: true },
+    token: { type: String, enum: ['SOL', 'USDC'], required: true },
+    counterparty: { type: String, required: true },
+    txHash: { type: String, required: true },
+    status: {
+      type: String,
+      enum: ['confirmed', 'unconfirmed', 'failed'],
+      default: 'confirmed',
+    },
+    date: { type: Date, default: Date.now },
+  },
+  { _id: true }
+);
 
 const PendingClaimSchema = new Schema<IPendingClaim>({
   amount: { type: Number, required: true },
-  token: { type: String, required: true },
+  token: { type: String, enum: ['SOL', 'USDC'], required: true },
   fromTx: { type: String, required: true },
-  sender: { type: String, required: true }
+  sender: { type: String, required: true },
+  // Without this the dashboard had nothing to show but "now" for every claim.
+  createdAt: { type: Date, default: Date.now },
 });
 
-const UserSchema = new Schema<IUser>({
-  twitterId: { type: String, required: true, unique: true },
-  handle: { type: String, required: true, unique: true },
-  name: { type: String, required: true },
-  profileImage: { type: String, default: '' },
-  bio: { type: String, default: '' },
-  walletAddress: { type: String, required: true, unique: true },
-  encryptedPrivateKey: { type: String }, // Only for custodial wallets
-  isEmbedded: { type: Boolean, default: false },
-  history: [TransactionSchema],
-  pendingClaims: [PendingClaimSchema]
-}, {
-  timestamps: true
-});
+const UserSchema = new Schema<IUser>(
+  {
+    // `unique` already builds an index; the old code also called schema.index()
+    // for each of these, so Mongoose warned about duplicates on every boot.
+    twitterId: { type: String, required: true, unique: true },
+    privyUserId: { type: String, unique: true, sparse: true },
+    handle: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    name: { type: String, required: true },
+    profileImage: { type: String, default: '' },
+    bio: { type: String, default: '' },
+    // `sparse` matters: twitter-callback used to write '' here, and a second such
+    // user collided on the unique index and failed to save.
+    walletAddress: { type: String, unique: true, sparse: true },
+    encryptedPrivateKey: { type: String },
+    isEmbedded: { type: Boolean, default: false },
+    claimed: { type: Boolean, default: false },
+    history: [TransactionSchema],
+    pendingClaims: [PendingClaimSchema],
+  },
+  { timestamps: true }
+);
 
-// Create indexes for efficient queries
-UserSchema.index({ twitterId: 1 });
-UserSchema.index({ handle: 1 });
-UserSchema.index({ walletAddress: 1 });
-
-export default mongoose.models.User || mongoose.model<IUser>('User', UserSchema);
-
+export default (mongoose.models.User as mongoose.Model<IUser>) ||
+  mongoose.model<IUser>('User', UserSchema);
