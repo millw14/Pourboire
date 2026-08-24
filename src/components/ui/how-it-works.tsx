@@ -1,7 +1,7 @@
 'use client';
 
 import { Reveal } from './reveal';
-import { exampleCommand, BOT_HANDLE } from '@/lib/tip-command';
+import { exampleCommand, exampleGiveaway, BOT_HANDLE } from '@/lib/tip-command';
 
 /**
  * The three-step explainer.
@@ -58,9 +58,50 @@ export function HowItWorks() {
             </Reveal>
           ))}
         </ol>
+
+        <Reveal index={4} className="mt-16">
+          <h3 className="text-xl font-extralight tracking-tight text-white">
+            More you can do
+          </h3>
+          <div className="mt-6 grid gap-4 sm:grid-cols-3">
+            {EXTRAS.map((extra) => (
+              <div
+                key={extra.title}
+                className="rounded-xl border border-white/10 bg-white/5 p-4"
+              >
+                <h4 className="text-sm font-medium text-white">{extra.title}</h4>
+                <code className="mt-2 block break-words font-mono text-xs text-blue-200">
+                  {extra.code}
+                </code>
+                <p className="mt-2 text-xs font-light leading-relaxed text-white/50">
+                  {extra.body}
+                </p>
+              </div>
+            ))}
+          </div>
+        </Reveal>
       </div>
     </section>
   );
 }
+
+/** Every command here comes from the same parser the bot runs. */
+const EXTRAS = [
+  {
+    title: 'Any token',
+    code: `${BOT_HANDLE} tip 100000 BONK`,
+    body: 'SOL, USDC, BONK, WIF and more — or paste any mint address.',
+  },
+  {
+    title: 'Several people at once',
+    code: `${BOT_HANDLE} split 3 SOL @a @b @c`,
+    body: 'Use "each" instead of "split" to give them all the full amount.',
+  },
+  {
+    title: 'Provably fair giveaways',
+    code: exampleGiveaway(),
+    body: 'Winners drawn from an on-chain beacon. Anyone can verify the result.',
+  },
+] as const;
 
 export default HowItWorks;

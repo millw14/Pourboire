@@ -9,6 +9,7 @@ import { CopyButton, truncateMiddle } from '@/components/ui/copy-button';
 import { exampleCommand } from '@/lib/tip-command';
 import { FundDialog } from './fund-dialog';
 import { WithdrawDialog } from './withdraw-dialog';
+import { SwapDialog } from './swap-dialog';
 import type { MeResponse, HistoryItem } from './types';
 
 type Tab = 'overview' | 'activity';
@@ -37,6 +38,7 @@ export default function DashboardPage() {
   const [tab, setTab] = useState<Tab>('overview');
   const [fundOpen, setFundOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [swapOpen, setSwapOpen] = useState(false);
 
   // Bumped to ask the effect below for a fresh load.
   const [reloadKey, setReloadKey] = useState(0);
@@ -175,6 +177,7 @@ export default function DashboardPage() {
               unavailable={Boolean(wallet?.balanceError)}
               onFund={() => setFundOpen(true)}
               onWithdraw={() => setWithdrawOpen(true)}
+              onSwap={() => setSwapOpen(true)}
               onRetry={() => refresh()}
               canWithdraw={Boolean(balanceLabel && Number(balanceLabel) > 0)}
             />
@@ -222,6 +225,9 @@ export default function DashboardPage() {
           address={wallet.address}
           onFunded={() => refresh()}
         />
+      )}
+      {wallet?.address && swapOpen && (
+        <SwapDialog onClose={() => setSwapOpen(false)} onSwapped={() => refresh()} />
       )}
       {wallet?.address && withdrawOpen && (
         <WithdrawDialog
@@ -375,6 +381,7 @@ function BalanceCard({
   unavailable,
   onFund,
   onWithdraw,
+  onSwap,
   onRetry,
   canWithdraw,
 }: {
@@ -382,6 +389,7 @@ function BalanceCard({
   unavailable: boolean;
   onFund: () => void;
   onWithdraw: () => void;
+  onSwap: () => void;
   onRetry: () => void;
   canWithdraw: boolean;
 }) {
@@ -419,6 +427,13 @@ function BalanceCard({
             className="flex-1 rounded-xl bg-blue-500 px-5 py-3 text-sm font-light tracking-tight transition hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 sm:flex-none"
           >
             Add funds
+          </button>
+          <button
+            type="button"
+            onClick={onSwap}
+            className="flex-1 rounded-xl border border-white/15 px-5 py-3 text-sm font-light tracking-tight transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 sm:flex-none"
+          >
+            Swap
           </button>
           <button
             type="button"
