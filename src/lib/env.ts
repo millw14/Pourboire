@@ -68,3 +68,10 @@ export function rpcUrl(): string {
 }
 
 export const isProduction = () => process.env.NODE_ENV === 'production';
+
+/** Public origin, used to build absolute URLs for receipt cards and profiles. */
+export function baseUrl(): string {
+  if (process.env.NEXT_PUBLIC_BASE_URL) return process.env.NEXT_PUBLIC_BASE_URL.replace(/\/$/, '');
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return `http://localhost:${process.env.PORT ?? 3000}`;
+}

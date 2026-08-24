@@ -29,8 +29,10 @@ export interface IProcessedTweet extends Document {
   status: TweetStatus;
   senderHandle?: string;
   recipientHandle?: string;
-  amount?: number;
-  token?: 'SOL' | 'USDC';
+  /** Human amount as written in the tweet. */
+  amount?: string;
+  /** Symbol or raw mint, as written. */
+  token?: string;
   txHash?: string;
   /** Why it is not settled, for operator triage. */
   note?: string;
@@ -48,8 +50,8 @@ const ProcessedTweetSchema = new Schema<IProcessedTweet>(
     },
     senderHandle: String,
     recipientHandle: String,
-    amount: Number,
-    token: { type: String, enum: ['SOL', 'USDC'] },
+    amount: String,
+    token: String,
     txHash: String,
     note: String,
   },

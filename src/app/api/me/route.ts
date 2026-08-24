@@ -6,6 +6,7 @@ import { handleError, ok, rateLimit, tooManyRequests } from '@/lib/api';
 import { resolveCallerUser } from '@/lib/wallets';
 import { cluster } from '@/lib/env';
 import { getConnection, lamportsToSol } from '@/lib/solana';
+import { findTokenBySymbol, formatAmount } from '@/lib/tokens';
 import type { ITransaction, IPendingClaim } from '@/models/User';
 
 /**
@@ -21,6 +22,19 @@ import type { ITransaction, IPendingClaim } from '@/models/User';
 export const maxDuration = 20;
 
 const HISTORY_LIMIT = 100;
+
+/** Rebuild a token descriptor from what the record stored alongside the amount. */
+function tokenOf(record: { tokenSymbol: string; tokenMint: string | null; tokenDecimals: number }) {
+  return (
+    findTokenBySymbol(record.tokenSymbol) ?? {
+      symbol: record.tokenSymbol,
+      name: record.tokenSymbol,
+      mint: record.tokenMint,
+      decimals: record.tokenDecimals,
+      color: '#8B8B8B',
+    }
+  );
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -67,8 +81,12 @@ export async function GET(req: NextRequest) {
       .map((h: ITransaction) => ({
         type: h.type,
         direction: h.direction ?? (h.type === 'transfer' ? 'out' : 'in'),
-        amount: h.amount,
-        token: h.token,
+        // Amounts cross the wire as pre-formatted strings plus their raw base
+        // units, so the client never has to know a token's decimals to render
+        // them — and can never render them wrong.
+        amount: formatAmount(BigInt(h.amount), tokenOf(h)),
+        rawAmount: h.amount,
+        token: h.tokenSymbol,
         counterparty: h.counterparty,
         txHash: h.txHash,
         status: h.status ?? 'confirmed',
@@ -77,8 +95,8 @@ export async function GET(req: NextRequest) {
 
     const pending = (user.pendingClaims ?? []).map((p: IPendingClaim) => ({
       id: String(p._id),
-      amount: p.amount,
-      token: p.token,
+      amount: formatAmount(BigInt(p.amount), tokenOf(p)),
+      token: p.tokenSymbol,
       sender: p.sender,
       tweetId: p.fromTx,
       createdAt: p.createdAt ?? user.createdAt,

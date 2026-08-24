@@ -104,6 +104,23 @@ export async function transferLamports(params: {
     maxRetries: 3,
   });
 
+  return confirmSignature(signature, blockhash, lastValidBlockHeight);
+}
+
+/**
+ * Wait for a submitted signature, using the blockhash's own validity window.
+ *
+ * Shared by the native and SPL paths so there is exactly one place that decides
+ * what "we don't know yet" means. That distinction is the whole point: reporting
+ * an unconfirmed transaction as failed is what makes a caller retry and send the
+ * money twice.
+ */
+export async function confirmSignature(
+  signature: string,
+  blockhash: string,
+  lastValidBlockHeight: number
+): Promise<TransferOutcome> {
+  const conn = getConnection();
   try {
     const result = await conn.confirmTransaction(
       { signature, blockhash, lastValidBlockHeight },
@@ -128,6 +145,30 @@ export async function transferLamports(params: {
     }
     return { status: 'unconfirmed', signature };
   }
+}
+
+/**
+ * A public randomness beacon: the blockhash of a recently finalised slot.
+ *
+ * Used to settle giveaways. Its value is unknowable when a giveaway commits to
+ * its seed, and permanently checkable afterwards — anyone can query the slot and
+ * confirm the hash. That is what makes the draw verifiable rather than trusted.
+ *
+ * Requires an RPC that serves `getBlock`; the public endpoints often do not, so
+ * production needs a real provider.
+ */
+export async function fetchBeacon(): Promise<{ slot: number; hash: string }> {
+  const conn = getConnection();
+  const slot = await conn.getSlot('finalized');
+  const block = await conn.getBlock(slot, {
+    maxSupportedTransactionVersion: 0,
+    transactionDetails: 'none',
+    rewards: false,
+  });
+  if (!block?.blockhash) {
+    throw new Error('Could not read a finalized block for the draw beacon');
+  }
+  return { slot, hash: block.blockhash };
 }
 
 export function explorerTxUrl(signature: string): string {

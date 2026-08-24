@@ -5,6 +5,7 @@ import { requireCaller } from '@/lib/auth';
 import { check, handleError, ok, rateLimit, tooManyRequests, fail } from '@/lib/api';
 import { decryptPrivateKey } from '@/lib/crypto';
 import { resolveCallerUser } from '@/lib/wallets';
+import { SOL } from '@/lib/tokens';
 import {
   explorerTxUrl,
   getConnection,
@@ -85,8 +86,13 @@ export async function POST(req: NextRequest) {
     user.history.push({
       type: 'transfer',
       direction: 'out',
-      amount: amountSol,
-      token: 'SOL',
+      // Base units, matching every other writer. Storing the human value here
+      // would make the same field mean two different things depending on which
+      // code path wrote it.
+      amount: String(requested),
+      tokenSymbol: SOL.symbol,
+      tokenMint: SOL.mint,
+      tokenDecimals: SOL.decimals,
       counterparty: destination.toString(),
       txHash: outcome.signature,
       status: outcome.status,

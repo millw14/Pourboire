@@ -3,8 +3,10 @@
 export interface HistoryItem {
   type: 'tip' | 'transfer';
   direction: 'in' | 'out';
-  amount: number;
-  token: 'SOL' | 'USDC';
+  /** Pre-formatted by the server, e.g. "1.5 SOL" — the client never does decimal maths. */
+  amount: string;
+  rawAmount: string;
+  token: string;
   counterparty: string;
   txHash: string;
   status: 'confirmed' | 'unconfirmed' | 'failed';
@@ -14,8 +16,8 @@ export interface HistoryItem {
 
 export interface PendingTip {
   id: string;
-  amount: number;
-  token: 'SOL' | 'USDC';
+  amount: string;
+  token: string;
   sender: string;
   tweetId: string;
   createdAt: string;

@@ -44,7 +44,26 @@ export async function getUserProfile(userId: string): Promise<TwitterUser | null
   }
 }
 
-export async function postTweet(text: string, replyToTweetId?: string): Promise<string | null> {
+/**
+ * Upload a receipt image and return its media id.
+ *
+ * Deliberately fails soft: a card that will not upload should cost us the
+ * picture, not the reply telling someone they were paid.
+ */
+export async function uploadReceipt(png: Buffer): Promise<string | null> {
+  try {
+    return await getClient().v1.uploadMedia(png, { mimeType: 'image/png' });
+  } catch (error) {
+    console.error('[twitter] receipt upload failed', (error as Error)?.message);
+    return null;
+  }
+}
+
+export async function postTweet(
+  text: string,
+  replyToTweetId?: string,
+  mediaId?: string | null
+): Promise<string | null> {
   try {
     const options: Parameters<TwitterApi['v2']['tweet']>[0] = {
       text: text.length > 280 ? `${text.slice(0, 277)}...` : text,
@@ -59,6 +78,10 @@ export async function postTweet(text: string, replyToTweetId?: string): Promise<
       options.reply = { in_reply_to_tweet_id: id };
     }
 
+    if (mediaId) {
+      options.media = { media_ids: [mediaId] };
+    }
+
     const tweet = await getClient().v2.tweet(options);
     return tweet?.data?.id ?? null;
   } catch (error) {
@@ -70,6 +93,52 @@ export async function postTweet(text: string, replyToTweetId?: string): Promise<
     });
     return null;
   }
+}
+
+/**
+ * Every reply to a conversation, for drawing giveaway entries.
+ *
+ * X's search only reaches back seven days, which is why giveaway windows are
+ * capped well inside that.
+ */
+export async function fetchReplies(conversationId: string, max = 500): Promise<Mention[]> {
+  const collected: Mention[] = [];
+  let nextToken: string | undefined;
+
+  do {
+    const res = await getClient().v2.search(`conversation_id:${conversationId}`, {
+      'tweet.fields': ['id', 'text', 'author_id', 'created_at'],
+      'user.fields': ['id', 'username', 'name', 'profile_image_url'],
+      expansions: ['author_id'],
+      max_results: 100,
+      next_token: nextToken,
+    });
+
+    const payload = (res as unknown as { _realData?: unknown })._realData ?? res;
+    const raw = payload as {
+      data?: unknown;
+      includes?: { users?: TwitterUser[] };
+      meta?: { next_token?: string };
+    };
+
+    const usersById = new Map<string, TwitterUser>();
+    for (const u of raw.includes?.users ?? []) usersById.set(u.id, u);
+
+    for (const t of (Array.isArray(raw.data) ? raw.data : []) as Array<Record<string, unknown>>) {
+      const authorId = t.author_id ? String(t.author_id) : undefined;
+      collected.push({
+        id: String(t.id),
+        text: String(t.text ?? ''),
+        author_id: authorId,
+        created_at: t.created_at ? String(t.created_at) : undefined,
+        author: authorId ? usersById.get(authorId) : undefined,
+      });
+    }
+
+    nextToken = raw.meta?.next_token;
+  } while (nextToken && collected.length < max);
+
+  return collected;
 }
 
 /**

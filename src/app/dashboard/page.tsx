@@ -456,7 +456,7 @@ function Overview({ data, onOpenActivity }: { data: MeResponse; onOpenActivity: 
               >
                 <span className="font-light text-white/80">from {p.sender}</span>
                 <span className="font-medium tabular-nums text-amber-200">
-                  {p.amount} {p.token}
+                  {p.amount}
                 </span>
               </li>
             ))}
@@ -511,7 +511,7 @@ function Overview({ data, onOpenActivity }: { data: MeResponse; onOpenActivity: 
                       }`}
                     />
                     <span className="truncate">
-                      {tx.direction === 'out' ? 'Sent' : 'Received'} {tx.amount} {tx.token}
+                      {tx.direction === 'out' ? 'Sent' : 'Received'} {tx.amount}
                     </span>
                   </span>
                   <time
@@ -591,7 +591,7 @@ function Activity({ history, truncated }: { history: HistoryItem[]; truncated?: 
                 }`}
               >
                 {tx.direction === 'out' ? 'âˆ’' : '+'}
-                {tx.amount} {tx.token}
+                {tx.amount}
               </p>
             </div>
           </li>

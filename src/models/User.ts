@@ -4,8 +4,11 @@ export interface ITransaction {
   type: 'tip' | 'transfer';
   /** Direction relative to this user, so history can be read without guessing. */
   direction: 'in' | 'out';
-  amount: number;
-  token: 'SOL' | 'USDC';
+  /** Base units, as a string: BigInt does not survive JSON or BSON. */
+  amount: string;
+  tokenSymbol: string;
+  tokenMint: string | null;
+  tokenDecimals: number;
   counterparty: string;
   txHash: string;
   /** `unconfirmed` means submitted but not observed on-chain — never retry these. */
@@ -15,8 +18,10 @@ export interface ITransaction {
 
 export interface IPendingClaim {
   _id?: string;
-  amount: number;
-  token: 'SOL' | 'USDC';
+  amount: string;
+  tokenSymbol: string;
+  tokenMint: string | null;
+  tokenDecimals: number;
   /** The tweet the tip came from. */
   fromTx: string;
   sender: string;
@@ -46,8 +51,10 @@ const TransactionSchema = new Schema<ITransaction>(
   {
     type: { type: String, enum: ['tip', 'transfer'], required: true },
     direction: { type: String, enum: ['in', 'out'], required: true },
-    amount: { type: Number, required: true },
-    token: { type: String, enum: ['SOL', 'USDC'], required: true },
+    amount: { type: String, required: true },
+    tokenSymbol: { type: String, required: true },
+    tokenMint: { type: String, default: null },
+    tokenDecimals: { type: Number, required: true },
     counterparty: { type: String, required: true },
     txHash: { type: String, required: true },
     status: {
@@ -61,8 +68,10 @@ const TransactionSchema = new Schema<ITransaction>(
 );
 
 const PendingClaimSchema = new Schema<IPendingClaim>({
-  amount: { type: Number, required: true },
-  token: { type: String, enum: ['SOL', 'USDC'], required: true },
+  amount: { type: String, required: true },
+  tokenSymbol: { type: String, required: true },
+  tokenMint: { type: String, default: null },
+  tokenDecimals: { type: Number, required: true },
   fromTx: { type: String, required: true },
   sender: { type: String, required: true },
   // Without this the dashboard had nothing to show but "now" for every claim.
