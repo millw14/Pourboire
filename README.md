@@ -1,255 +1,263 @@
-# Pourboire - Tip anyone on X with Solana
+# Pourboire
 
-A complete decentralized application (dApp) that enables instant tips and donations on X (Twitter) using Solana blockchain. Built with Next.js, TypeScript, and featuring a stunning neural network hero component.
-
-## 🚀 Features
-
-### Core Functionality
-- **Instant Tips**: Send SOL or USDC to any X post with a simple @Pourboire mention
-- **Auto-Pay Features**: Set up automatic tipping rules for followers, replies, or giveaways
-- **Zero Fees**: Only pay Solana network fees (~0.000005 SOL per transaction)
-- **x402 Integration**: Powered by x402 for instant micropayments and premium features
-- **Custodial Wallets**: Auto-create wallets for recipients who haven't connected yet
-- **Smart Giveaways**: Pick random winners, highest likes, or first N replies automatically
-
-### Technical Features
-- **Neural Network Hero**: Beautiful animated background with custom CPPN shader
-- **3D Phone Tutorial**: Interactive 3D phone showing how to use Pourboire
-- **Real-time Dashboard**: Connect wallet, view transactions, manage auto-pay rules
-- **Responsive Design**: Works perfectly on all devices
-- **TypeScript**: Fully typed for better development experience
-
-## 🏗️ Architecture
-
-### Frontend (Next.js)
-- **Landing Page**: Neural network hero with 3D phone tutorial
-- **Dashboard**: User profile, transaction history, auto-pay management
-- **Wallet Integration**: Solana wallet adapter with multiple wallet support
-- **Real-time Updates**: Live transaction status and balance updates
-
-### Backend (Node.js)
-- **Twitter API Integration**: Monitor mentions and process tip commands
-- **Solana Integration**: Send SOL/USDC transactions
-- **MongoDB**: Store user data, transactions, and auto-pay rules
-- **Cron Jobs**: Poll Twitter every 2 minutes for new mentions
-- **Encryption**: Secure storage of custodial wallet private keys
-
-### Smart Contracts (Anchor/Rust)
-- **Escrow Contract**: Hold unclaimed tips until recipients claim them
-- **Multi-token Support**: Handle both SOL and SPL tokens (USDC)
-- **Security**: Time-locked and authority-controlled escrow system
-
-## 🛠️ Tech Stack
-
-### Frontend
-- **Next.js 16** with App Router
-- **TypeScript** for type safety
-- **Tailwind CSS** for styling
-- **shadcn/ui** component library
-- **Three.js** for 3D graphics
-- **GSAP** for animations
-- **React Three Fiber** for React integration
-- **Solana Wallet Adapter** for wallet connectivity
-
-### Backend
-- **Node.js** with Express
-- **MongoDB** with Mongoose
-- **Twitter API v2** for social media integration
-- **Solana Web3.js** for blockchain interactions
-- **libsodium** for encryption
-- **Jupiter API** for token swaps
-- **node-cron** for scheduled tasks
-
-### Blockchain
-- **Solana** for fast, low-cost transactions
-- **Anchor** for smart contract development
-- **Rust** for contract programming
-- **x402** for micropayment protocols
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Node.js 18+ 
-- MongoDB
-- Solana CLI
-- Anchor CLI
-- Twitter API access (Basic tier recommended)
-
-### Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd meridian2.0
-   ```
-
-2. **Install frontend dependencies**:
-   ```bash
-   npm install
-   ```
-
-3. **Install backend dependencies**:
-   ```bash
-   cp package-server.json package.json
-   npm install
-   ```
-
-4. **Set up environment variables**:
-   ```bash
-   cp .env.example .env.local
-   # Edit .env.local with your API keys
-   ```
-
-5. **Start the development servers**:
-   ```bash
-   # Terminal 1: Frontend
-   npm run dev
-   
-   # Terminal 2: Backend
-   npm run dev
-   ```
-
-### Environment Variables
-
-Create a `.env.local` file with:
-
-```env
-# Twitter API
-TWITTER_API_KEY=your_twitter_api_key
-TWITTER_API_SECRET=your_twitter_api_secret
-TWITTER_ACCESS_TOKEN=your_twitter_access_token
-TWITTER_ACCESS_SECRET=your_twitter_access_secret
-
-# Solana
-SOLANA_RPC_URL=https://api.devnet.solana.com
-ENCRYPTION_PASSWORD=your_encryption_password
-
-# MongoDB
-MONGODB_URI=mongodb://localhost:27017/soltip
-
-# Server
-PORT=3001
-```
-
-## 📱 Usage
-
-### For Users
-
-1. **Connect Wallet**: Visit the dashboard and connect your Solana wallet
-2. **Send Tips**: Reply to any X post with `@Pourboire tip 0.5 SOL`
-3. **Set Auto-Pay**: Configure automatic tipping rules in the dashboard
-4. **Run Giveaways**: Use `@Pourboire pick random 5 replies and tip 0.1 SOL`
-
-### For Developers
-
-1. **Customize UI**: Modify components in `src/components/ui/`
-2. **Add Features**: Extend the backend API in `server.js`
-3. **Deploy Contracts**: Use Anchor to deploy to Solana
-4. **Monitor**: Check logs and transaction status
-
-## 🎨 UI Components
-
-### Neural Network Hero
-- **Custom CPPN Shader**: Complex neural network generating animated patterns
-- **GSAP Animations**: Smooth text reveals and transitions
-- **Responsive Design**: Adapts to all screen sizes
-
-### 3D Phone Tutorial
-- **Interactive 3D Model**: Shows how to use Pourboire on mobile
-- **Floating Labels**: Step-by-step instructions
-- **Smooth Animations**: GSAP-powered transitions
-
-### Dashboard
-- **Wallet Integration**: Connect multiple Solana wallets
-- **Transaction History**: View all sent/received tips
-- **Auto-Pay Management**: Create and manage tipping rules
-- **Real-time Updates**: Live balance and transaction status
-
-## 🔧 Development
-
-### Frontend Commands
-```bash
-npm run dev          # Start development server
-npm run build        # Build for production
-npm run start        # Start production server
-npm run lint         # Run ESLint
-```
-
-### Backend Commands
-```bash
-npm run dev          # Start with nodemon
-npm start            # Start production server
-npm test             # Run tests
-```
-
-### Smart Contract Commands
-```bash
-anchor build         # Build the program
-anchor deploy        # Deploy to devnet
-anchor test          # Run tests
-```
-
-## 🚀 Deployment
-
-### Frontend (Vercel)
-1. Connect your GitHub repository to Vercel
-2. Set environment variables in Vercel dashboard
-3. Deploy automatically on push to main
-
-### Backend (Heroku/AWS)
-1. Create a new app on your hosting platform
-2. Set environment variables
-3. Deploy using Git or Docker
-
-### Smart Contracts (Solana)
-1. Build and deploy to devnet first
-2. Test thoroughly
-3. Deploy to mainnet-beta
-4. Update program ID in frontend
-
-## 🔒 Security
-
-- **Private Key Encryption**: All custodial keys encrypted with libsodium
-- **Rate Limiting**: Prevent spam and abuse
-- **Input Validation**: Sanitize all user inputs
-- **Smart Contract Audits**: Regular security reviews
-- **HTTPS Only**: All communications encrypted
-
-## 📊 Monitoring
-
-- **Transaction Tracking**: Monitor all blockchain transactions
-- **Error Logging**: Comprehensive error tracking
-- **Performance Metrics**: Monitor API response times
-- **User Analytics**: Track usage patterns (privacy-focused)
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🆘 Support
-
-- **Documentation**: Check the docs folder
-- **Issues**: Open an issue on GitHub
-- **Discord**: Join our community server
-- **Twitter**: Follow @Pourboire for updates
-
-## 🎯 Roadmap
-
-- [ ] Mobile app (React Native)
-- [ ] More token support (USDT, etc.)
-- [ ] Advanced auto-pay rules
-- [ ] Integration with other social platforms
-- [ ] NFT tipping support
-- [ ] Multi-language support
+Tip anyone on X with Solana. Reply to a post with `@Pourboireonsol tip 0.5 SOL` and the author
+gets the SOL — no wallet needed on their side. If they haven't signed up, the tip lands in a
+custodial wallet that becomes theirs when they do.
 
 ---
 
-**Built with ❤️ by the Pourboire team**
+## ⚠️ Read this before deploying
+
+This app holds **private keys for its users** in MongoDB, encrypted with a single symmetric key.
+That design puts a lot of weight on two things:
+
+1. **`ENCRYPTION_KEY` must never leak, and must never be lost.** Leaking it plus a database dump
+   is total compromise of every custodial wallet. Losing it makes every custodial wallet
+   permanently unspendable. Back it up somewhere other than the machine running the app.
+2. **Every route that can move money must verify the caller.** They all do now (see
+   [Authentication](#authentication)), but this is the invariant to protect in review.
+
+If you are picking this repo up after October 2025, assume the keys in any pre-existing database
+are compromised — the withdrawal endpoint was reachable without authentication, so plaintext keys
+were exposed through the API rather than through the ciphertext. Sweep to fresh keypairs; rotating
+`ENCRYPTION_KEY` alone is not sufficient.
+
+---
+
+## Requirements
+
+- Node.js 20+
+- A MongoDB database
+- A Privy app (authentication) — https://dashboard.privy.io
+- X/Twitter API credentials for the bot account
+- A Solana RPC endpoint that serves `getBlock` (the public one is rate limited to the point of
+  uselessness, and giveaway draws need `getBlock` specifically)
+
+## Setup
+
+```bash
+npm install
+cp env.example .env.local
+```
+
+Fill in `.env.local`. Every variable the code reads is documented in `env.example`; the two you
+must generate yourself:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Run that twice — once for `ENCRYPTION_KEY`, once for `CRON_SECRET`. Then:
+
+```bash
+npm run dev
+```
+
+`npm run build` works without a database — nothing reads configuration at module scope, so a
+missing secret surfaces as a clear error on the route that needs it rather than a build failure.
+
+## Checks
+
+```bash
+npm run check
+```
+
+Typecheck, lint and tests. For local UI work against realistic data without touching a real
+database:
+
+```bash
+node scripts/seed-dev.mjs
+```
+
+That starts an in-memory MongoDB on port 37017 and seeds a profile and two giveaways. Point
+`MONGODB_URI` at the printed URI.
+
+## Architecture
+
+```
+src/
+  app/
+    page.tsx              Landing page. No providers above it, so it ships no wallet code.
+    [handle]/             Public creator profiles: /@alice
+    giveaway/[id]/        Public giveaway verification
+    dashboard/            The only route that loads Privy + the Solana wallet adapter
+    api/
+      me/                 GET  — everything the dashboard needs, one authenticated call
+      wallet/withdraw/    POST — move SOL out of the caller's own tip wallet
+      wallet/swap/        GET quote, POST execute — Jupiter, inside the caller's wallet
+      og/tip/             GET  — HMAC-signed receipt card images
+      twitter/poll/       GET/POST — settle tips and giveaways (machine-authenticated)
+  lib/
+    auth.ts               Verifies Privy tokens. Identity never comes from the request body.
+    api.ts                One error shape; decides what detail leaks in production.
+    tokens.ts             Token registry and exact decimal conversion.
+    lamports.ts           Pure lamport arithmetic (unit-tested, no dependencies).
+    solana.ts             Native transfers, confirmation, the draw beacon, explorer links.
+    spl.ts                SPL transfers, associated-token-account handling.
+    settle.ts             "Can the sender afford this, and what does it cost them."
+    draw.ts               Provably-fair winner selection.
+    giveaway.ts           Giveaway lifecycle: open, draw, pay.
+    jupiter.ts            Swap quotes and execution. Dashboard-only, never the bot.
+    receipt.ts            HMAC signing for receipt card parameters.
+    tip-command.ts        The command syntax. Shared by the parser and the UI so they can't drift.
+    wallets.ts            Custodial wallet lifecycle. Never overwrites an existing key.
+    crypto.ts             libsodium secretbox around private keys.
+  models/
+    User.ts               Accounts, history, pending claims.
+    ProcessedTweet.ts     The idempotency ledger. One payout per tweet, ever.
+    PollCursor.ts         Server-side high-water mark for the mention search.
+    Giveaway.ts           Commitment, beacon, entries, winners.
+```
+
+### Authentication
+
+| Caller | Mechanism |
+| --- | --- |
+| A signed-in person | Privy access token in `Authorization: Bearer`, verified against Privy, resolved to an account by immutable Twitter subject id — never by handle, which is renameable and spoofable. |
+| The scheduler | `CRON_SECRET` bearer token, compared in constant time. If the variable is unset the endpoint refuses every request rather than defaulting to open. |
+
+No route accepts an account identifier from its request body.
+
+### How tips settle
+
+1. Vercel Cron calls `/api/twitter/poll` (see `vercel.json`).
+2. The poller searches for mentions newer than the stored `PollCursor`.
+3. For each parsed command, it **claims the tweet id in `ProcessedTweet` before attempting
+   anything.** The unique index makes that atomic, so overlapping runs cannot double-send.
+4. It transfers from the sender's custodial wallet to the recipient's, creating the recipient's
+   wallet if they've never signed up.
+5. Tips that can't settle yet (sender unfunded, amount below the rent-exempt minimum) are marked
+   `pending` and retried on later runs. Tips that were submitted but not confirmed are marked
+   `unconfirmed` and **never retried** — the transaction may still land.
+
+### Scheduling
+
+`vercel.json` registers a cron for `/api/twitter/poll`. Vercel Cron sends `GET` with the
+`CRON_SECRET` attached automatically. **Sub-daily crons need a Vercel Pro plan** — on Hobby the
+schedule is clamped to once a day, so use an external scheduler hitting the same endpoint with
+`Authorization: Bearer $CRON_SECRET` if you're on Hobby.
+
+---
+
+## Commands
+
+All case-insensitive. `@Pourboire` also works as a shorter form of the bot handle.
+
+### Tips
+
+```
+@Pourboireonsol tip 0.5 SOL                tips the author of the post you replied to
+@Pourboireonsol tip 0.5 SOL @alice         tips @alice
+@Pourboireonsol tip @alice 0.5             same, token defaults to SOL
+@Pourboireonsol tip 100000 BONK            any token in the registry
+@Pourboireonsol tip 5 <mint address>       any SPL token, by mint
+@Pourboireonsol tip 1 SOL each @a @b @c    the full amount to each of them
+@Pourboireonsol split 3 SOL @a @b @c       one amount divided between them
+```
+
+Symbols resolve against a curated registry in `src/lib/tokens.ts` — deliberately not Jupiter's
+full list, where most entries are scams sharing a symbol with something real. Anything outside
+the registry must be tipped by mint address, where the sender has already decided which token
+they mean.
+
+The first SPL tip to someone who has never held that token opens an account for them, and the
+**sender** pays its rent (~0.00204 SOL). The bot says so rather than letting the transaction fail.
+
+### Giveaways
+
+```
+@Pourboireonsol giveaway 5 SOL to 10 in 2h
+@Pourboireonsol giveaway 1 SOL to 3 people in 30m
+@Pourboireonsol giveaway 10 USDC to 5 winners in 1d
+```
+
+Windows run from 5 minutes to 7 days. The ceiling sits inside X's seven-day search window, which
+is how entries are collected.
+
+## How the giveaway draw works
+
+Three steps, and the *order* is what makes it verifiable:
+
+1. **Commit.** When the giveaway opens, a random seed is generated and only its SHA-256 hash is
+   published, in the announcement tweet. A hash reveals nothing about the draw.
+2. **Beacon.** When the window closes, the blockhash of a finalised Solana slot is taken. That
+   value did not exist at commit time, so the seed cannot have been chosen to favour anyone.
+3. **Reveal.** The seed is published. `HMAC-SHA256(seed, beacon)` drives a Fisher-Yates shuffle
+   over the sorted entry list, with rejection sampling so no index is favoured by modulo bias.
+
+Neither side can steer it alone: we pick the seed but not the beacon, and the chain never sees
+the seed. Grinding the beacon would mean rewriting Solana history.
+
+`/giveaway/<tweetId>` publishes the commitment, the seed, the slot, the blockhash, the full entry
+list and the algorithm — and **re-runs the draw server-side**, displaying a mismatch rather than
+hiding it. A verification page that cannot fail verifies nothing.
+
+Implementation in `src/lib/draw.ts`; the properties are pinned in `src/lib/draw.test.ts`,
+including reproducibility, resistance to modulo bias, and that prize remainders are distributed
+rather than stranded.
+
+## Receipt cards
+
+Every bot reply carries a generated 1200×630 card instead of a sentence. `/api/og/tip` renders
+it, and every parameter set is **HMAC-signed** — without that it would be an open generator for
+authentic-looking Pourboire receipts showing any amount between any two handles, which is a
+ready-made scam tool. Unsigned or tampered parameters return 404.
+
+## Creator pages
+
+`pourboire.tips/@handle` shows totals per token, top tippers, giveaways run, and recent tips.
+
+**Only received tips are shown.** Every one was already announced publicly on X by the bot, so
+the page discloses nothing new. Withdrawals, transfers out, balances and pending claims are
+deliberately never rendered — an earlier version of this app leaked exactly that by wallet
+address, and it is not worth reintroducing for a leaderboard.
+
+## X API costs
+
+X discontinued the free tier in February 2026 and moved to pay-per-use. In April 2026 it
+added **$0.20 per post containing a URL**, against $0.015 for a plain one. Reads are
+$0.005 per post, $0.010 per user object, deduplicated within a 24-hour UTC window, and
+capped at 3M post reads per billing cycle.
+
+That link charge dominates everything else here, so **no bot reply contains a URL.** The
+transaction signature and the verification address are rendered onto the receipt card
+instead — text inside an image is not parsed by X, so the reader still gets both.
+
+| Tip size | Value at $102/SOL | With a link | Without |
+| --- | --- | --- | --- |
+| 0.01 SOL | $1.02 | 22.1% | 3.9% |
+| 0.05 SOL | $5.10 | 4.4% | 0.8% |
+| 0.5 SOL | $50.98 | 0.4% | 0.1% |
+
+`containsLink()` in `src/lib/twitter.ts` guards this, and `postTweet` logs a loud warning if
+a reply would be billed at the link rate. X auto-links bare domains, so a template saying
+`pourboire.tips` with no scheme costs exactly as much as the full address —
+`src/lib/twitter.test.ts` pins every canned reply against that.
+
+A giveaway with 1,000 replies costs roughly **$13** to collect entries, which is fine
+against a 5 SOL prize and not against a 0.5 SOL one. There is deliberately no minimum tip
+size yet; revisit once there is real usage data.
+
+Idle polling is free: a search returning no new mentions returns no billable resources.
+
+## Known limitations
+
+- **Swaps are dashboard-only.** Jupiter is wired into `/api/wallet/swap` for converting balances
+  by hand. It is deliberately *not* wired into the tip bot: auto-selling someone's SOL because
+  they tweeted "tip 100k BONK" would mean silently trading at whatever slippage the route
+  carries, triggered by a tweet.
+- **Jupiter's API host has moved before.** `JUPITER_API_URL` overrides it; the default is their
+  current free-tier endpoint.
+- **Giveaway entries cost X API quota.** Collecting every reply to a thread is the most expensive
+  call the bot makes. Check your tier's limits before promoting the feature.
+- **Rate limiting is per-instance.** `src/lib/api.ts` blunts casual abuse and runaway retry
+  loops, but on serverless it is not a global limiter. Put a real one at the edge before any
+  volume.
+- **`programs/soltip` is not deployed or used.** It has a placeholder program id and the escrow
+  PDA cannot release SOL as written. Treat it as a sketch, not a component.
+- **The server holds custodial keys.** Moving unclaimed tips into an on-chain escrow would remove
+  the largest risk in the system; that work has not been done.
+
+## License
+
+MIT.

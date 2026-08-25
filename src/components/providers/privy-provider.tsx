@@ -1,81 +1,84 @@
 'use client';
 
 import { PrivyProvider as PrivyProviderBase } from '@privy-io/react-auth';
-import { FC, ReactNode, useEffect, useState } from 'react';
+import type { FC, ReactNode } from 'react';
+import { cluster } from '@/lib/env';
 
-interface PrivyProviderProps {
-  children: ReactNode;
-}
+/**
+ * Privy, configured for the cluster this deployment actually runs on.
+ *
+ * Two problems are fixed here:
+ *
+ *  1. The chain config was hardcoded to Solana **devnet** while the API routes
+ *     defaulted to **mainnet-beta**. A user could approve a transaction that the
+ *     UI described as devnet while real money moved.
+ *
+ *  2. The old `isClient` gate rendered `<>{children}</>` on the server and first
+ *     client render, then swapped in `<PrivyProviderBase>` after mount. Because
+ *     React reconciles that position by type, the entire app below it unmounted
+ *     and remounted on every load — throwing away all component state and
+ *     re-running every effect. `ssr: false` on the dynamic import handles this
+ *     properly instead.
+ */
 
-export const PrivyProvider: FC<PrivyProviderProps> = ({ children }) => {
-  const [isClient, setIsClient] = useState(false);
+const CHAINS = {
+  'mainnet-beta': {
+    id: 101,
+    name: 'Solana',
+    network: 'mainnet-beta',
+    rpc: 'https://api.mainnet-beta.solana.com',
+  },
+  devnet: {
+    id: 103,
+    name: 'Solana Devnet',
+    network: 'devnet',
+    rpc: 'https://api.devnet.solana.com',
+  },
+  testnet: {
+    id: 102,
+    name: 'Solana Testnet',
+    network: 'testnet',
+    rpc: 'https://api.testnet.solana.com',
+  },
+} as const;
+
+export const PrivyProvider: FC<{ children: ReactNode }> = ({ children }) => {
   const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
 
-  useEffect(() => {
-    setIsClient(true);
-  }, []);
-
-  if (!isClient) {
-    return <>{children}</>;
-  }
-
   if (!appId) {
-    console.warn('NEXT_PUBLIC_PRIVY_APP_ID is not set. Privy authentication will not work.');
+    // Render the app anyway. Sign-in will not work, but the surrounding UI
+    // stays usable and can say so — far better than a blank error screen.
     return <>{children}</>;
   }
 
-  try {
-    return (
-      <PrivyProviderBase
-        appId={appId}
-        config={{
-        // Configure login methods
+  const active = CHAINS[cluster()];
+  const rpc = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || active.rpc;
+
+  return (
+    <PrivyProviderBase
+      appId={appId}
+      config={{
         loginMethods: ['twitter', 'email', 'wallet'],
-          
-          // Configure embedded wallets
-          embeddedWallets: {
-            // Solana-only; prevent creating a new embedded wallet for existing users
-            solana: ({
-              createOnLogin: 'users-without-wallets',
-            } as any),
-          },
-          
-          // Configure appearance
-          appearance: {
-            theme: 'dark',
-            accentColor: '#3B82F6',
-          },
-          
-        // Configure supported chains - Solana devnet
+        embeddedWallets: {
+          solana: { createOnLogin: 'users-without-wallets' },
+        },
+        appearance: {
+          theme: 'dark',
+          accentColor: '#3B82F6',
+          logo: '/pour.png',
+        },
         supportedChains: [
           {
-            id: 1399811149, // Solana devnet chain ID
-            name: 'Solana Devnet',
-            network: 'devnet',
-            nativeCurrency: {
-              name: 'SOL',
-              symbol: 'SOL',
-              decimals: 9,
-            },
-            rpcUrls: {
-              default: {
-                http: ['https://api.devnet.solana.com'],
-              },
-              public: {
-                http: ['https://api.devnet.solana.com'],
-              },
-            },
-          }
+            id: active.id,
+            name: active.name,
+            network: active.network,
+            nativeCurrency: { name: 'SOL', symbol: 'SOL', decimals: 9 },
+            rpcUrls: { default: { http: [rpc] }, public: { http: [rpc] } },
+          },
         ],
-        }}
-      >
-        {children}
-      </PrivyProviderBase>
-    );
-  } catch (error) {
-    console.error('Privy initialization error:', error);
-    return <>{children}</>;
-  }
+      }}
+    >
+      {children}
+    </PrivyProviderBase>
+  );
 };
-
-

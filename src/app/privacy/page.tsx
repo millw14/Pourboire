@@ -1,4 +1,8 @@
-'use client';
+import type { Metadata } from 'next';
+
+// No 'use client': this page is static text with no interactivity, so it has no
+// reason to ship a client bundle or opt out of static rendering.
+export const metadata: Metadata = { title: 'Privacy Policy' };
 
 export default function PrivacyPolicyPage() {
   return (
@@ -9,7 +13,7 @@ export default function PrivacyPolicyPage() {
 
         <section className="space-y-6 text-white/80 leading-relaxed">
           <p>
-            Pourboire ("we", "us", "our") respects your privacy. This policy explains what information we
+            Pourboire (&ldquo;we&rdquo;, &ldquo;us&rdquo;, &ldquo;our&rdquo;) respects your privacy. This policy explains what information we
             collect, how we use it, and your choices. By using our website or app, you agree to this policy.
           </p>
 

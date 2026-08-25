@@ -1,0 +1,45 @@
+# Gitleaks configuration.
+#
+# This repo once had a live MongoDB Atlas password committed to it, so the scan
+# runs over full history and a failure here is treated as real until proven
+# otherwise. Allowlist entries must therefore be narrow: allowlist the specific
+# value, never the rule or the whole file, so the scanner keeps working for
+# everything else in that file.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "solana-private-key-array"
+description = "Solana keypair exported as a raw byte array"
+# The shape `[12,34,...]` with 64 entries is what `solana-keygen` writes to
+# id.json. A real one of these in the repo would be a total compromise, and the
+# default rules do not look for it.
+regex = '''\[\s*(?:\d{1,3}\s*,\s*){63}\d{1,3}\s*\]'''
+tags = ["solana", "private-key"]
+
+[allowlist]
+description = "Public identifiers that are high-entropy but not secret"
+
+paths = [
+  # Lockfile: integrity hashes are base64 digests, not credentials.
+  '''package-lock\.json''',
+]
+
+regexes = [
+  # The $POURBOIRE token mint. A Solana mint address is a public key printed on
+  # the website on purpose — base58 gives it entropy 4.73, which trips the
+  # generic-api-key rule. Pinned to this exact value rather than allowlisting
+  # base58 generally, so a genuine key pasted into the same file still fails.
+  '''jwByd6QTKh94rhz9TtGrf97cNisrrQtXR1MRJ9cpump''',
+
+  # Well-known public mints referenced in token resolution and tests.
+  '''EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v''',
+  '''Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB''',
+  '''DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263''',
+  '''So11111111111111111111111111111111111111112''',
+
+  # The all-zero key used in .env.example and in tests to show the expected
+  # shape of ENCRYPTION_KEY. Sixty-four zeroes is not a secret.
+  '''0{64}''',
+]

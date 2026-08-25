@@ -1,221 +1,126 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { Keypair } from '@solana/web3.js';
 import connectDB from '@/lib/mongodb';
-import User from '@/models/User';
-import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL, Keypair } from '@solana/web3.js';
+import { requireCaller } from '@/lib/auth';
+import { check, handleError, ok, rateLimit, tooManyRequests, fail } from '@/lib/api';
 import { decryptPrivateKey } from '@/lib/crypto';
+import { resolveCallerUser } from '@/lib/wallets';
+import { SOL } from '@/lib/tokens';
+import {
+  explorerTxUrl,
+  getConnection,
+  lamportsToSol,
+  parseAmountSol,
+  parsePublicKey,
+  solToLamports,
+  spendableLamports,
+  transferLamports,
+} from '@/lib/solana';
 
-// POST /api/wallet/withdraw
-// Body: { handle: string, toAddress: string, amount: number }
-// Withdraws SOL from custodial tip wallet to another address
+/**
+ * Move SOL out of the caller's own custodial tip wallet.
+ *
+ * This endpoint previously took the account to debit from the request body and
+ * had no authentication whatsoever, so anyone could drain anyone. The account is
+ * now derived entirely from the verified session — the body carries only a
+ * destination and an amount, and cannot select a victim.
+ */
+
+// The confirmation wait can legitimately take ~30s; make the platform budget explicit.
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
+    const caller = await requireCaller(req);
+
+    if (!rateLimit(`withdraw:${caller.privyUserId}`, 5, 60_000)) {
+      return tooManyRequests();
+    }
+
     await connectDB();
-    const { handle, toAddress, amount } = await req.json();
-    
-    if (!handle || !toAddress || !amount) {
-      return NextResponse.json({ error: 'Missing required fields: handle, toAddress, amount' }, { status: 400 });
-    }
+    const user = await resolveCallerUser(caller);
+    check(user, 'No tip wallet found for your account');
+    check(user.encryptedPrivateKey, 'Your tip wallet is not set up yet');
 
-    const norm = (h: string) => (h.startsWith('@') ? h : `@${h}`);
-    const userHandle = norm(handle);
+    const body = await req.json().catch(() => ({}));
+    const destination = parsePublicKey(body.toAddress, 'address');
+    const amountSol = parseAmountSol(body.amount);
+    const requested = solToLamports(amountSol);
 
-    // Find user with custodial wallet
-    let user;
-    try {
-      user = await User.findOne({ handle: userHandle });
-      if (!user) {
-        return NextResponse.json({ error: 'User not found' }, { status: 404 });
-      }
-      if (!user.encryptedPrivateKey) {
-        return NextResponse.json({ error: 'User has no custodial wallet private key' }, { status: 404 });
-      }
-      if (!user.walletAddress) {
-        return NextResponse.json({ error: 'User has no wallet address' }, { status: 404 });
-      }
-    } catch (e: any) {
-      console.error('Error finding user:', e?.message);
-      return NextResponse.json({ error: 'Database error while finding user', details: e?.message }, { status: 500 });
-    }
+    const secretKey = await decryptPrivateKey(user.encryptedPrivateKey!);
+    check(secretKey.length === 64, 'Your tip wallet key could not be read');
+    const keypair = Keypair.fromSecretKey(secretKey);
 
-    // Validate recipient address
-    let recipientPubkey: PublicKey;
-    try {
-      recipientPubkey = new PublicKey(toAddress);
-    } catch (e: any) {
-      return NextResponse.json({ error: 'Invalid recipient address', details: e?.message }, { status: 400 });
-    }
+    check(
+      keypair.publicKey.toString() === user.walletAddress,
+      'Your tip wallet key does not match its address'
+    );
+    check(
+      destination.toString() !== user.walletAddress,
+      'That is your own tip wallet address'
+    );
 
-    // Validate amount
-    const amountNum = Number(amount);
-    if (isNaN(amountNum) || amountNum <= 0) {
-      return NextResponse.json({ error: 'Invalid amount' }, { status: 400 });
-    }
-
-    // Decrypt private key
-    let privateKeyBytes: Uint8Array;
-    let walletKeypair: Keypair;
-    try {
-      if (!process.env.ENCRYPTION_KEY) {
-        throw new Error('ENCRYPTION_KEY environment variable is not set');
-      }
-      privateKeyBytes = decryptPrivateKey(user.encryptedPrivateKey);
-      if (!privateKeyBytes || privateKeyBytes.length !== 64) {
-        throw new Error(`Invalid decrypted key length: ${privateKeyBytes?.length}, expected 64`);
-      }
-      walletKeypair = Keypair.fromSecretKey(privateKeyBytes);
-    } catch (e: any) {
-      console.error('Error decrypting private key:', e?.message);
-      return NextResponse.json({ 
-        error: 'Failed to decrypt private key', 
-        details: e?.message 
-      }, { status: 500 });
-    }
-
-    // Get balance
-    let balance: number;
-    let conn: Connection;
-    try {
-      const rpc = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-      conn = new Connection(rpc);
-      balance = await conn.getBalance(walletKeypair.publicKey);
-    } catch (e: any) {
-      console.error('Error getting balance:', e?.message);
-      return NextResponse.json({ 
-        error: 'Failed to get wallet balance', 
-        details: e?.message 
-      }, { status: 500 });
-    }
-    
-    const requestedLamports = Math.floor(amountNum * LAMPORTS_PER_SOL);
-    
-    // Estimate fee (roughly 5000 lamports)
-    const estimatedFee = 5000;
-    if (balance < requestedLamports + estimatedFee) {
-      return NextResponse.json({ 
-        error: `Insufficient balance. Available: ${(balance / LAMPORTS_PER_SOL).toFixed(4)} SOL, Requested: ${amountNum} SOL` 
-      }, { status: 400 });
-    }
-
-    // Create and send transaction with fresh blockhash
-    let sig: string;
-    try {
-      // Get fresh blockhash right before creating transaction
-      // Use 'finalized' for longer validity, but fetch right before use
-      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('finalized');
-      
-      // Create transaction with blockhash immediately
-      const tx = new Transaction({
-        feePayer: walletKeypair.publicKey,
-        blockhash: blockhash,
-        lastValidBlockHeight: lastValidBlockHeight
-      }).add(
-        SystemProgram.transfer({
-          fromPubkey: walletKeypair.publicKey,
-          toPubkey: recipientPubkey,
-          lamports: requestedLamports
-        })
+    const balance = await getConnection().getBalance(keypair.publicKey, 'confirmed');
+    const spendable = spendableLamports(balance);
+    if (requested > spendable) {
+      // Report the real ceiling — the old message compared against the raw
+      // balance, so "withdraw everything" built a transaction that could not
+      // pay its own fee and failed on-chain.
+      return fail(
+        400,
+        `You can withdraw up to ${lamportsToSol(spendable).toFixed(6)} SOL. The rest covers the network fee and keeps the account open.`,
+        'insufficient_funds'
       );
-
-      // Sign transaction
-      tx.sign(walletKeypair);
-      
-      // Serialize immediately
-      const serializedTx = tx.serialize();
-      
-      // Send transaction with preflight disabled (we've already validated balance)
-      // This avoids blockhash expiry during simulation
-      sig = await conn.sendRawTransaction(serializedTx, {
-        skipPreflight: true,  // Skip simulation to avoid blockhash expiry
-        maxRetries: 5
-      });
-      
-    } catch (e: any) {
-      const errorMsg = e?.message || String(e);
-      console.error('Error creating/sending transaction:', errorMsg);
-      
-      // Try to get detailed error logs
-      if (typeof e?.getLogs === 'function') {
-        try {
-          const logs = await e.getLogs();
-          console.error('Transaction simulation logs:', logs);
-          return NextResponse.json({ 
-            error: 'Failed to create or send transaction', 
-            details: errorMsg,
-            logs: logs
-          }, { status: 500 });
-        } catch {}
-      }
-      
-      return NextResponse.json({ 
-        error: 'Failed to create or send transaction', 
-        details: errorMsg
-      }, { status: 500 });
     }
 
-    // Wait for confirmation with retry logic
-    try {
-      const startTime = Date.now();
-      while (Date.now() - startTime < 60000) {
-        const status = await conn.getSignatureStatus(sig);
-        if (status?.value?.err) {
-          return NextResponse.json({ error: 'Transaction failed', details: status.value.err }, { status: 500 });
-        }
-        if (status?.value?.confirmationStatus === 'confirmed' || status?.value?.confirmationStatus === 'finalized') {
-          break;
-        }
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      }
-      
-      // Verify final status
-      const finalStatus = await conn.getSignatureStatus(sig);
-      if (finalStatus?.value?.err) {
-        return NextResponse.json({ error: 'Transaction failed', details: finalStatus.value.err }, { status: 500 });
-      }
-    } catch (e: any) {
-      console.error('Error confirming transaction:', e?.message);
-      return NextResponse.json({ 
-        error: 'Failed to confirm transaction', 
-        details: e?.message,
-        txHash: sig 
-      }, { status: 500 });
-    }
-
-    // Record in history
-    try {
-      user.history.push({
-        type: 'transfer',
-        amount: amountNum,
-        token: 'SOL',
-        counterparty: toAddress,
-        txHash: sig,
-        date: new Date()
-      });
-      await user.save();
-    } catch (e: any) {
-      console.error('Error saving transaction history:', e?.message);
-      // Don't fail the request if history save fails, but log it
-    }
-
-    return NextResponse.json({
-      success: true,
-      txHash: sig,
-      amount: amountNum,
-      from: user.walletAddress,
-      to: toAddress,
-      solscanUrl: `https://solscan.io/tx/${sig}`
+    const outcome = await transferLamports({
+      from: keypair,
+      to: destination,
+      lamports: requested,
     });
 
-  } catch (e: any) {
-    const message = e?.message || String(e);
-    const stack = e?.stack || '';
-    console.error('wallet/withdraw error', message, stack);
-    
-    // Always return error details for debugging (even in production)
-    return NextResponse.json({ 
-      error: 'Withdrawal failed', 
-      details: message,
-      stack: process.env.NODE_ENV !== 'production' ? stack : undefined
-    }, { status: 500 });
+    if (outcome.status === 'failed') {
+      return fail(502, 'The network rejected the transfer. Nothing was sent.', 'tx_failed');
+    }
+
+    user.history.push({
+      type: 'transfer',
+      direction: 'out',
+      // Base units, matching every other writer. Storing the human value here
+      // would make the same field mean two different things depending on which
+      // code path wrote it.
+      amount: String(requested),
+      tokenSymbol: SOL.symbol,
+      tokenMint: SOL.mint,
+      tokenDecimals: SOL.decimals,
+      counterparty: destination.toString(),
+      txHash: outcome.signature,
+      status: outcome.status,
+      date: new Date(),
+    });
+    await user.save();
+
+    if (outcome.status === 'unconfirmed') {
+      // Submitted but not observed. Reporting failure here is what made callers
+      // retry and send twice, so this is deliberately a success shape with an
+      // honest status.
+      return ok({
+        status: 'unconfirmed',
+        txHash: outcome.signature,
+        explorerUrl: explorerTxUrl(outcome.signature),
+        message:
+          'Sent, but the network has not confirmed it yet. Track it on Solscan — do not send again.',
+      });
+    }
+
+    return ok({
+      status: 'confirmed',
+      txHash: outcome.signature,
+      explorerUrl: explorerTxUrl(outcome.signature),
+      amount: amountSol,
+      to: destination.toString(),
+    });
+  } catch (e) {
+    return handleError('wallet/withdraw', e);
   }
 }
-
