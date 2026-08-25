@@ -23,6 +23,15 @@ export interface ReceiptParams {
   kind: 'tip' | 'giveaway';
   /** Winner count, for giveaway cards. */
   winners?: number;
+  /**
+   * Rendered along the bottom of the card, typically a verification address.
+   *
+   * This is how a URL reaches the reader without X billing the post as a link:
+   * text inside an image is not parsed, so the card can show
+   * `pourboire.tips/giveaway/…` while the tweet itself stays at the plain-post
+   * rate.
+   */
+  footer?: string;
 }
 
 const FIELD_ORDER: Array<keyof ReceiptParams> = [
@@ -33,6 +42,7 @@ const FIELD_ORDER: Array<keyof ReceiptParams> = [
   'color',
   'tx',
   'winners',
+  'footer',
 ];
 
 function canonical(params: ReceiptParams): string {
@@ -74,6 +84,7 @@ export function verifyReceipt(search: URLSearchParams): ReceiptParams | null {
     color: search.get('color') ?? '#14F195',
     tx: search.get('tx') ?? undefined,
     winners: winnersRaw ? Number(winnersRaw) : undefined,
+    footer: search.get('footer') ?? undefined,
   };
 
   const expected = sign(params);

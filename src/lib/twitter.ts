@@ -1,5 +1,7 @@
 import { TwitterApi } from 'twitter-api-v2';
-import { twitterCredentials } from './env';
+// Explicit extension: this module is imported by the Node test runner, which
+// does not resolve extensionless relative paths.
+import { twitterCredentials } from './env.ts';
 
 let client: TwitterApi | null = null;
 
@@ -64,11 +66,39 @@ export async function uploadReceipt(png: Buffer): Promise<string | null> {
   }
 }
 
+/**
+ * Does this text contain something X will turn into a link?
+ *
+ * X charges **$0.20 for a post containing a URL** versus $0.015 for a plain one
+ * — thirteen times more — and it auto-links bare domains, so `pourboire.tips`
+ * with no scheme costs just as much as the full address. Every reply the bot
+ * sends is therefore checked, because a stray domain in a message template is a
+ * 13x cost regression that nothing else would surface.
+ */
+export function containsLink(text: string): boolean {
+  if (/\bhttps?:\/\//i.test(text)) return true;
+  // A bare domain: at least one label, a dot, then a plausible TLD. Digits after
+  // the dot are excluded so "0.5 SOL" and "1.25" do not trip it.
+  return /\b[a-z0-9][a-z0-9-]*\.(?:com|net|org|io|tips|xyz|app|dev|co|gg|fun|sh|to|me|ai|so|link|money)\b/i.test(
+    text
+  );
+}
+
 export async function postTweet(
   text: string,
   replyToTweetId?: string,
-  mediaId?: string | null
+  mediaId?: string | null,
+  opts: { allowLinks?: boolean } = {}
 ): Promise<string | null> {
+  if (!opts.allowLinks && containsLink(text)) {
+    // Not fatal — the person still needs to hear that their money moved — but
+    // loud, because it means this post cost 13x what it should have.
+    console.warn(
+      '[twitter] posting a link-bearing tweet at $0.20 instead of $0.015. Text:',
+      text.slice(0, 120)
+    );
+  }
+
   try {
     const options: Parameters<TwitterApi['v2']['tweet']>[0] = {
       text: text.length > 280 ? `${text.slice(0, 277)}...` : text,

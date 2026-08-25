@@ -6,7 +6,7 @@ import { decryptPrivateKey } from './crypto';
 import { commitmentFor, drawWinners, generateSeed, splitPrize } from './draw';
 import { baseUrl } from './env';
 import { renderReceipt } from './render-receipt';
-import { explorerTxUrl, fetchBeacon, getConnection, spendableLamports } from './solana';
+import { fetchBeacon, getConnection, spendableLamports } from './solana';
 import { buildSolPayouts, buildSplTransfer, recipientNeedsAccount, sendInstructions } from './spl';
 import { formatAmount } from './tokens';
 import { parseTokenAmount, resolveToken, type ResolvedToken } from './settle';
@@ -69,7 +69,7 @@ export async function openGiveaway(params: {
   const creator = await findUser({ handle: creatorHandle });
   if (!creator?.encryptedPrivateKey || !creator.walletAddress) {
     await postTweet(
-      `${creatorHandle} sign in at pourboire.tips and fund your tip wallet first, then try again.`,
+      `${creatorHandle} fund your tip wallet first, then try again.`,
       tweetId
     );
     return false;
@@ -97,6 +97,11 @@ export async function openGiveaway(params: {
     throw e;
   }
 
+  // The verification address rides on the card, not in the text: a URL in the
+  // tweet body costs $0.20 against $0.015 for a plain post, and text inside an
+  // image is not parsed by X.
+  const verifyPath = `${baseUrl().replace(/^https?:\/\//, '')}/giveaway/${tweetId}`;
+
   const media = await renderReceipt({
     kind: 'giveaway',
     from: creatorHandle,
@@ -104,12 +109,13 @@ export async function openGiveaway(params: {
     amount: formatAmount(parsed.base, token.info),
     color: token.info.color,
     winners: command.winners,
+    footer: verifyPath,
   }).then((png) => (png ? uploadReceipt(png) : null));
 
   // The commitment goes out now, before anyone can enter. Publishing it later
   // would prove nothing.
   await postTweet(
-    `🎁 ${formatAmount(parsed.base, token.info)} to ${command.winners} winners.\n\nReply to enter. Closes ${closesAt.toUTCString().slice(5, 22)} UTC.\n\nProvably fair — commitment ${commitmentFor(seed).slice(0, 16)}…\nVerify: ${baseUrl()}/giveaway/${tweetId}`,
+    `🎁 ${formatAmount(parsed.base, token.info)} to ${command.winners} winners.\n\nReply to enter. Closes ${closesAt.toUTCString().slice(5, 22)} UTC.\n\nProvably fair — the draw is committed in advance:\n${commitmentFor(seed).slice(0, 32)}…`,
     tweetId,
     media
   );
@@ -197,7 +203,7 @@ async function settleGiveaway(giveaway: IGiveaway): Promise<boolean> {
   if (!(await creatorCanCover(keypair, token, targets))) {
     await voidOut(
       'insufficient balance at draw time',
-      `${giveaway.creatorHandle} your tip wallet no longer covers the prize, so the giveaway could not pay out. Winners were drawn and are recorded at ${baseUrl()}/giveaway/${giveaway.tweetId}`
+      `${giveaway.creatorHandle} your tip wallet no longer covers the prize, so the giveaway could not pay out. The winners were still drawn and are recorded on the verification page.`
     );
     return false;
   }
@@ -285,12 +291,13 @@ async function settleGiveaway(giveaway: IGiveaway): Promise<boolean> {
     amount: formatAmount(BigInt(giveaway.totalAmount), token.info),
     color: token.info.color,
     winners: winners.length,
-    tx: `${signatures[0]!.slice(0, 6)}…${signatures[0]!.slice(-6)}`,
+    tx: `${signatures[0]!.slice(0, 8)}…${signatures[0]!.slice(-8)}`,
+    footer: `${baseUrl().replace(/^https?:\/\//, '')}/giveaway/${giveaway.tweetId}`,
   }).then((png) => (png ? uploadReceipt(png) : null));
 
   const names = winners.slice(0, 10).join(' ');
   await postTweet(
-    `🎉 Winners: ${names}${winners.length > 10 ? ` +${winners.length - 10} more` : ''}\n\n${formatAmount(shares[0]!, token.info)} each, paid.\n\nVerify the draw: ${baseUrl()}/giveaway/${giveaway.tweetId}\n${explorerTxUrl(signatures[0]!)}`,
+    `🎉 Winners: ${names}${winners.length > 10 ? ` +${winners.length - 10} more` : ''}\n\n${formatAmount(shares[0]!, token.info)} each, paid.\n\nThe seed and the on-chain beacon are published — verification address on the card.`,
     giveaway.tweetId,
     media
   );

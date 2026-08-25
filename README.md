@@ -212,6 +212,34 @@ the page discloses nothing new. Withdrawals, transfers out, balances and pending
 deliberately never rendered — an earlier version of this app leaked exactly that by wallet
 address, and it is not worth reintroducing for a leaderboard.
 
+## X API costs
+
+X discontinued the free tier in February 2026 and moved to pay-per-use. In April 2026 it
+added **$0.20 per post containing a URL**, against $0.015 for a plain one. Reads are
+$0.005 per post, $0.010 per user object, deduplicated within a 24-hour UTC window, and
+capped at 3M post reads per billing cycle.
+
+That link charge dominates everything else here, so **no bot reply contains a URL.** The
+transaction signature and the verification address are rendered onto the receipt card
+instead — text inside an image is not parsed by X, so the reader still gets both.
+
+| Tip size | Value at $102/SOL | With a link | Without |
+| --- | --- | --- | --- |
+| 0.01 SOL | $1.02 | 22.1% | 3.9% |
+| 0.05 SOL | $5.10 | 4.4% | 0.8% |
+| 0.5 SOL | $50.98 | 0.4% | 0.1% |
+
+`containsLink()` in `src/lib/twitter.ts` guards this, and `postTweet` logs a loud warning if
+a reply would be billed at the link rate. X auto-links bare domains, so a template saying
+`pourboire.tips` with no scheme costs exactly as much as the full address —
+`src/lib/twitter.test.ts` pins every canned reply against that.
+
+A giveaway with 1,000 replies costs roughly **$13** to collect entries, which is fine
+against a 5 SOL prize and not against a 0.5 SOL one. There is deliberately no minimum tip
+size yet; revisit once there is real usage data.
+
+Idle polling is free: a search returning no new mentions returns no billable resources.
+
 ## Known limitations
 
 - **Swaps are dashboard-only.** Jupiter is wired into `/api/wallet/swap` for converting balances

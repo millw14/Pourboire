@@ -116,15 +116,18 @@ function Card(params: ReceiptParams) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        {/* The card is where URLs live now. Text inside an image is not parsed
+            by X, so this costs nothing, while the same string in the tweet body
+            would move the post from $0.015 to $0.20. */}
         <div
           style={{
             display: 'flex',
             fontSize: 22,
             fontWeight: 300,
-            color: 'rgba(255,255,255,0.45)',
+            color: 'rgba(255,255,255,0.55)',
           }}
         >
-          pourboire.tips
+          {params.footer ?? 'pourboire.tips'}
         </div>
         {params.tx && (
           <div
@@ -132,7 +135,7 @@ function Card(params: ReceiptParams) {
               display: 'flex',
               fontSize: 20,
               fontFamily: 'monospace',
-              color: 'rgba(255,255,255,0.35)',
+              color: 'rgba(255,255,255,0.4)',
             }}
           >
             {params.tx}

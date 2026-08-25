@@ -17,9 +17,15 @@ function required(name: string): string {
 }
 
 export class EnvError extends Error {
-  constructor(public readonly key: string) {
+  // Assigned in the body rather than as a constructor parameter property:
+  // Node's type-stripping (which the test runner uses) rejects that syntax, and
+  // this module is reachable from modules under test.
+  readonly key: string;
+
+  constructor(key: string) {
     super(`Missing required environment variable: ${key}`);
     this.name = 'EnvError';
+    this.key = key;
   }
 }
 

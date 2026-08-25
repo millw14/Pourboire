@@ -5,7 +5,6 @@ import { handleError, ok } from '@/lib/api';
 import { searchMentions, postTweet, uploadReceipt, type Mention } from '@/lib/twitter';
 import { parseCommand, BOT_HANDLE, type TipCommand, type GiveawayCommand } from '@/lib/tip-command';
 import { renderReceipt } from '@/lib/render-receipt';
-import { explorerTxUrl } from '@/lib/solana';
 import { formatAmount } from '@/lib/tokens';
 import { parseTokenAmount, resolveToken, settleTransfer } from '@/lib/settle';
 import { openGiveaway, settleDueGiveaways } from '@/lib/giveaway';
@@ -217,7 +216,7 @@ async function settleTip(
     await mark('pending', { note: 'sender has no funded tip wallet' });
     await recordPendingClaims(recipients, tweetId, senderHandle, perRecipient, token);
     await notify(
-      `${recipients.join(' ')} ${senderHandle} wants to tip you ${formatAmount(perRecipient, token.info)}. They need to sign in at pourboire.tips and fund their tip wallet first.`
+      `${recipients.join(' ')} ${senderHandle} wants to tip you ${formatAmount(perRecipient, token.info)}, but needs to fund their tip wallet first. It arrives automatically once they do.`
     );
     return 'deferred';
   }
@@ -285,18 +284,24 @@ async function settleTip(
   });
 
   // The receipt card. A failure to render it costs the picture, not the reply.
+  //
+  // The transaction signature and the site address live on the card rather than
+  // in the tweet text: X bills a post containing a URL at $0.20 against $0.015
+  // for a plain one, which on a small tip is a fifth of the tip's value. Text
+  // inside an image is not parsed, so the reader still gets both.
   const media = await renderReceipt({
     kind: 'tip',
     from: senderHandle,
     to: paid.length === 1 ? paid[0]!.handle : `${paid.length} people`,
     amount: formatAmount(perRecipient, token.info),
     color: token.info.color,
-    tx: `${paid[0]!.signature.slice(0, 6)}…${paid[0]!.signature.slice(-6)}`,
+    tx: `${paid[0]!.signature.slice(0, 8)}…${paid[0]!.signature.slice(-8)}`,
+    footer: `pourboire.tips/${paid[0]!.handle}`,
   }).then((png) => (png ? uploadReceipt(png) : null));
 
   const who = paid.map((p) => p.handle).join(' ');
   await postTweet(
-    `${who} ${senderHandle} sent you ${formatAmount(perRecipient, token.info)}. It's already in your tip wallet — sign in at pourboire.tips to use it. ${explorerTxUrl(paid[0]!.signature)}`,
+    `${who} ${senderHandle} sent you ${formatAmount(perRecipient, token.info)}. It's already in your tip wallet — receipt below.`,
     tweetId,
     media
   );
