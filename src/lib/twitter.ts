@@ -52,7 +52,12 @@ export async function getUserProfile(userId: string): Promise<TwitterUser | null
  */
 export async function uploadReceipt(png: Buffer): Promise<string | null> {
   try {
-    return await getClient().v1.uploadMedia(png, { mimeType: 'image/png' });
+    // The v2 endpoint (POST /2/media/upload), not v1.1: media upload moved to v2
+    // and the old host is being retired.
+    return await getClient().v2.uploadMedia(png, {
+      media_type: 'image/png',
+      media_category: 'tweet_image',
+    });
   } catch (error) {
     console.error('[twitter] receipt upload failed', (error as Error)?.message);
     return null;
