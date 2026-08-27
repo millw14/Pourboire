@@ -1,7 +1,7 @@
 'use client';
 
 import { Reveal } from './reveal';
-import { exampleCommand, exampleGiveaway, BOT_HANDLE } from '@/lib/tip-command';
+import { exampleCommand, exampleGiveaway, exampleRain, BOT_HANDLE } from '@/lib/tip-command';
 
 /**
  * The three-step explainer.
@@ -101,6 +101,21 @@ const EXTRAS = [
     title: 'Provably fair giveaways',
     code: exampleGiveaway(),
     body: 'Winners drawn from an on-chain beacon. Anyone can verify the result.',
+  },
+  {
+    title: 'Rain on a thread',
+    code: exampleRain(),
+    body: 'Splits between the people replying, without naming any of them.',
+  },
+  {
+    title: 'Match a tip',
+    code: `${BOT_HANDLE} match`,
+    body: 'Reply to any tip to send the same amount to the same person.',
+  },
+  {
+    title: 'Ask it things',
+    code: `${BOT_HANDLE} wallet @alice`,
+    body: 'Returns their tip address as a scannable code, so anyone can pay them.',
   },
 ] as const;
 

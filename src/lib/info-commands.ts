@@ -99,10 +99,10 @@ function helpReply(senderHandle: string): InfoReply {
   const lines = [
     'tip 0.5 SOL — pays whoever wrote the post',
     'tip 0.5 SOL @alice — pays someone specific',
-    'tip 1 SOL each @a @b — pays both',
     'split 3 SOL @a @b @c — divides between them',
+    'rain 5 SOL — splits between repliers',
+    'match — repeats the tip you replied to',
     'giveaway 5 SOL to 10 in 2h — draws winners',
-    'wallet @alice — shows their tip address',
   ];
 
   return {

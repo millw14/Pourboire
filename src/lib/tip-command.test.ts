@@ -5,6 +5,7 @@ import {
   parseTipCommand,
   exampleCommand,
   exampleGiveaway,
+  RAIN_DEFAULT_RECIPIENTS,
 } from './tip-command.ts';
 
 /**
@@ -204,4 +205,57 @@ test('info verbs do not shadow tips', () => {
   // "tip" still wins even though these share the same prefix.
   assert.equal(parseCommand('@Pourboireonsol tip 0.5 SOL')?.kind, 'tip');
   assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 3 in 1h')?.kind, 'giveaway');
+});
+
+/* --------------------------------------------------------------- rain/match */
+
+test('rain, with and without a recipient count', () => {
+  assert.deepEqual(parseCommand('@Pourboireonsol rain 5 SOL'), {
+    kind: 'rain',
+    amount: '5',
+    token: 'SOL',
+    maxRecipients: RAIN_DEFAULT_RECIPIENTS,
+  });
+  assert.deepEqual(parseCommand('@Pourboireonsol rain 5 SOL to 20'), {
+    kind: 'rain',
+    amount: '5',
+    token: 'SOL',
+    maxRecipients: 20,
+  });
+  assert.deepEqual(parseCommand('@Pourboireonsol rain 2 SOL among 7 people'), {
+    kind: 'rain',
+    amount: '2',
+    token: 'SOL',
+    maxRecipients: 7,
+  });
+});
+
+test('rain defaults to SOL and carries other tokens', () => {
+  assert.equal((parseCommand('@Pourboireonsol rain 100') as { token: string })?.token, 'SOL');
+  assert.equal(
+    (parseCommand('@Pourboireonsol rain 1000000 BONK to 5') as { token: string })?.token,
+    'BONK'
+  );
+});
+
+test('rain strips thousands separators like every other amount', () => {
+  assert.equal((parseCommand('@Pourboireonsol rain 1,500 BONK') as { amount: string })?.amount, '1500');
+});
+
+test('match takes no arguments', () => {
+  assert.deepEqual(parseCommand('@Pourboireonsol match'), { kind: 'match' });
+  assert.deepEqual(parseCommand('@Pourboireonsol match!'), { kind: 'match' });
+});
+
+test('rain is not read as a giveaway or a tip', () => {
+  // "rain 5 SOL to 20" ends in a bare number, which the tip patterns would
+  // otherwise be happy to treat as part of the amount.
+  assert.equal(parseCommand('@Pourboireonsol rain 5 SOL to 20')?.kind, 'rain');
+  assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 20 in 1h')?.kind, 'giveaway');
+  assert.equal(parseCommand('@Pourboireonsol tip 5 SOL @alice')?.kind, 'tip');
+});
+
+test('rain rejects a zero or absent amount', () => {
+  assert.equal(parseCommand('@Pourboireonsol rain 0 SOL'), null);
+  assert.equal(parseCommand('@Pourboireonsol rain'), null);
 });

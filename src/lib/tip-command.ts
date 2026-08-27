@@ -54,7 +54,41 @@ export interface InfoCommand {
   subject: string | null;
 }
 
-export type Command = TipCommand | GiveawayCommand | InfoCommand;
+/**
+ * Split an amount between people who replied to the post, without naming them.
+ *
+ * This is `split` with the recipient list discovered instead of typed. It is
+ * kept as its own shape because the discovery has a cost the other commands do
+ * not: reading a thread is $0.005 per post plus $0.010 per unique author, so the
+ * recipient count is bounded and always explicit in the reply.
+ */
+export interface RainCommand {
+  kind: 'rain';
+  amount: string;
+  token: string;
+  /** Upper bound on recipients. Capped by RAIN_MAX_RECIPIENTS at settlement. */
+  maxRecipients: number;
+}
+
+/**
+ * Repeat the tip in the post being replied to, to the same person.
+ *
+ * Resolved from our own ledger rather than by re-reading the parent tweet, so
+ * it costs nothing extra in API spend.
+ */
+export interface MatchCommand {
+  kind: 'match';
+}
+
+export type Command =
+  | TipCommand
+  | GiveawayCommand
+  | InfoCommand
+  | RainCommand
+  | MatchCommand;
+
+/** Default recipients for a bare `rain`, when no count is given. */
+export const RAIN_DEFAULT_RECIPIENTS = 10;
 
 const HANDLE = '[A-Za-z0-9_]{1,15}';
 const AMOUNT = '\\d[\\d,]*(?:\\.\\d+)?';
@@ -233,12 +267,58 @@ function parseInfo(text: string): InfoCommand | null {
   };
 }
 
+/**
+ * `@Pourboireonsol rain 5 SOL`
+ * `@Pourboireonsol rain 5 SOL to 20`
+ * `@Pourboireonsol rain 5 SOL to 20 people`
+ */
+const RAIN_RE = new RegExp(
+  `${BOT}\\s+rain\\s+(${AMOUNT})\\s*(${TOKEN})?(?:\\s+(?:to|on|between|among)\\s+(\\d{1,3})\\s*(?:people|repliers?|replies)?)?`,
+  'i'
+);
+
+function parseRain(text: string): RainCommand | null {
+  const m = text.match(RAIN_RE);
+  if (!m) return null;
+
+  const amount = strip(m[1]!);
+  if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) return null;
+
+  const requested = m[3] ? Number(m[3]) : RAIN_DEFAULT_RECIPIENTS;
+  if (!Number.isFinite(requested) || requested < 1) return null;
+
+  const rawToken = m[2];
+  return {
+    kind: 'rain',
+    amount,
+    token: rawToken
+      ? TIPPABLE_SYMBOLS.includes(rawToken.toUpperCase())
+        ? rawToken.toUpperCase()
+        : rawToken
+      : 'SOL',
+    maxRecipients: requested,
+  };
+}
+
+/** `@Pourboireonsol match` — nothing else to parse; the parent supplies the rest. */
+const MATCH_RE = new RegExp(`${BOT}\\s+match\\b`, 'i');
+
+function parseMatch(text: string): MatchCommand | null {
+  return MATCH_RE.test(text) ? { kind: 'match' } : null;
+}
+
 export function parseCommand(text: string): Command | null {
-  // Order matters. Giveaway is the most specific shape and "giveaway 5 SOL to
-  // 10" would otherwise read as a tip. Info goes before the tip patterns for
-  // the same reason: those verbs carry no amount, so nothing else can match
-  // them, but checking first avoids relying on that.
-  return parseGiveaway(text) ?? parseInfo(text) ?? parseMulti(text) ?? parseSingle(text);
+  // Order matters, most specific first. "giveaway 5 SOL to 10" and "rain 5 SOL
+  // to 20" both end in a bare number that the tip patterns would happily read as
+  // a recipient count, so both are matched before them.
+  return (
+    parseGiveaway(text) ??
+    parseRain(text) ??
+    parseMatch(text) ??
+    parseInfo(text) ??
+    parseMulti(text) ??
+    parseSingle(text)
+  );
 }
 
 /** Back-compatible helper for callers that only care about tips. */
@@ -250,6 +330,10 @@ export function parseTipCommand(text: string): TipCommand | null {
 /** The canonical examples shown in the UI, generated from the same rules. */
 export function exampleCommand(amount = 0.5): string {
   return `${BOT_HANDLE} tip ${amount} SOL`;
+}
+
+export function exampleRain(amount = 1): string {
+  return `${BOT_HANDLE} rain ${amount} SOL`;
 }
 
 export function exampleGiveaway(): string {

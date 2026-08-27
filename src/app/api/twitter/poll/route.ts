@@ -2,13 +2,20 @@ import { NextRequest } from 'next/server';
 import connectDB from '@/lib/mongodb';
 import { requireMachineCaller } from '@/lib/auth';
 import { handleError, ok } from '@/lib/api';
-import { searchMentions, postTweet, uploadReceipt, type Mention } from '@/lib/twitter';
+import {
+  searchMentions,
+  fetchReplies,
+  postTweet,
+  uploadReceipt,
+  type Mention,
+} from '@/lib/twitter';
 import {
   parseCommand,
   BOT_HANDLE,
   type TipCommand,
   type GiveawayCommand,
   type InfoCommand,
+  type RainCommand,
 } from '@/lib/tip-command';
 import { buildInfoReply, infoRepliesToday, INFO_QUOTA_PER_DAY } from '@/lib/info-commands';
 import { renderReceipt } from '@/lib/render-receipt';
@@ -132,10 +139,12 @@ async function handleMention(tweet: Mention): Promise<MentionOutcome> {
     await ProcessedTweet.create({
       tweetId: String(tweet.id),
       status: 'claimed',
-      commandKind: command.kind,
+      commandKind: command.kind === 'info' ? 'info' : command.kind === 'giveaway' ? 'giveaway' : 'tip',
       senderHandle,
-      amount: command.kind === 'info' ? undefined : command.amount,
-      token: command.kind === 'info' ? undefined : command.token,
+      // info and match carry no amount of their own: info asks a question, and
+      // match takes its amount from the post it replies to.
+      amount: 'amount' in command ? command.amount : undefined,
+      token: 'token' in command ? command.token : undefined,
     });
   } catch (e: unknown) {
     if ((e as { code?: number })?.code === 11000) return 'skipped';
@@ -144,6 +153,14 @@ async function handleMention(tweet: Mention): Promise<MentionOutcome> {
 
   if (command.kind === 'info') {
     return answerInfo(tweet, senderHandle, command);
+  }
+
+  if (command.kind === 'rain') {
+    return settleRain(tweet, senderHandle, command);
+  }
+
+  if (command.kind === 'match') {
+    return settleMatch(tweet, senderHandle);
   }
 
   if (command.kind === 'giveaway') {
@@ -200,6 +217,142 @@ async function answerInfo(
   const posted = await postTweet(reply.text, tweetId, media);
   await mark(posted ? 'settled' : 'failed', posted ? `info:${command.topic}` : 'info reply failed');
   return posted ? 'settled' : 'skipped';
+}
+
+/**
+ * Hard ceiling on how many people one `rain` can reach.
+ *
+ * Reading a thread is $0.005 per post plus $0.010 per unique author, and each
+ * payout is its own on-chain transfer with its own fee. Both costs are the
+ * sender's, so the bound is fixed here rather than taken from the tweet.
+ */
+const RAIN_MAX_RECIPIENTS = 25;
+
+/** How much of a thread to read looking for recipients. 100 posts is $0.50. */
+const RAIN_SCAN_LIMIT = 100;
+
+/**
+ * Turn `rain` into an ordinary split tip by discovering who replied.
+ *
+ * Recipients are the most recent distinct repliers, excluding the sender, the
+ * bot, and anyone who appears twice.
+ */
+async function settleRain(
+  tweet: Mention,
+  senderHandle: string,
+  command: RainCommand
+): Promise<MentionOutcome> {
+  const tweetId = String(tweet.id);
+  const mark = (status: string, fields: Record<string, unknown> = {}) =>
+    ProcessedTweet.updateOne({ tweetId }, { $set: { status, ...fields } });
+
+  const conversationId = tweet.conversationId;
+  if (!conversationId) {
+    await mark('failed', { note: 'no conversation to rain on' });
+    await postTweet(
+      `${senderHandle} reply to a post with rain and I'll split it between the people replying there.`,
+      tweetId
+    );
+    return 'skipped';
+  }
+
+  let replies: Mention[];
+  try {
+    replies = await fetchReplies(conversationId, RAIN_SCAN_LIMIT);
+  } catch (e) {
+    await mark('failed', { note: `thread read failed: ${(e as Error).message}` });
+    return 'deferred';
+  }
+
+  const seen = new Set<string>([senderHandle]);
+  const recipients: string[] = [];
+  // Newest first: raining on a long thread should reach the people currently in
+  // it, not whoever happened to reply when it was posted.
+  for (const reply of [...replies].reverse()) {
+    const handle = reply.author?.username ? `@${reply.author.username.toLowerCase()}` : null;
+    if (!handle || seen.has(handle) || /^@pourboire(onsol)?$/i.test(handle)) continue;
+    seen.add(handle);
+    recipients.push(handle);
+    if (recipients.length >= Math.min(command.maxRecipients, RAIN_MAX_RECIPIENTS)) break;
+  }
+
+  if (recipients.length === 0) {
+    await mark('failed', { note: 'no one to rain on' });
+    await postTweet(`${senderHandle} nobody has replied there yet, so there was no one to pay.`, tweetId);
+    return 'skipped';
+  }
+
+  // Rain is `split` with a discovered recipient list, so it settles through
+  // exactly the same path — including the rent-exemption floor and the
+  // per-recipient failure handling.
+  const asTip: TipCommand = {
+    kind: 'tip',
+    amount: command.amount,
+    token: command.token,
+    recipientHandle: null,
+    mode: 'split',
+    recipients,
+  };
+
+  await mark('claimed', { recipientHandle: recipients[0], note: `rain to ${recipients.length}` });
+  return settleTip(tweet, senderHandle, asTip);
+}
+
+/**
+ * Repeat the tip in the post being replied to.
+ *
+ * Resolved from our own ledger, by either the original command's id or the id of
+ * the bot's confirmation, so it costs no extra API reads.
+ */
+async function settleMatch(tweet: Mention, senderHandle: string): Promise<MentionOutcome> {
+  const tweetId = String(tweet.id);
+  const mark = (status: string, fields: Record<string, unknown> = {}) =>
+    ProcessedTweet.updateOne({ tweetId }, { $set: { status, ...fields } });
+
+  const parentId = tweet.repliedToTweetId;
+  if (!parentId) {
+    await mark('failed', { note: 'match with no parent' });
+    await postTweet(`${senderHandle} reply to a tip with match and I'll send the same again.`, tweetId);
+    return 'skipped';
+  }
+
+  const original = await ProcessedTweet.findOne({
+    $or: [{ tweetId: parentId }, { replyTweetId: parentId }],
+    commandKind: 'tip',
+    status: { $in: ['settled', 'pending'] },
+  });
+
+  if (!original?.amount || !original.token || !original.recipientHandle) {
+    await mark('failed', { note: 'no matchable tip on parent' });
+    await postTweet(
+      `${senderHandle} I can't find a tip on that post to match. Reply directly to one and try again.`,
+      tweetId
+    );
+    return 'skipped';
+  }
+
+  if (original.recipientHandle === senderHandle) {
+    // Matching a tip you received would pay it straight back to yourself.
+    await mark('failed', { note: 'match would pay self' });
+    return 'skipped';
+  }
+
+  const asTip: TipCommand = {
+    kind: 'tip',
+    amount: original.amount,
+    token: original.token,
+    recipientHandle: original.recipientHandle,
+    mode: 'single',
+    recipients: [original.recipientHandle],
+  };
+
+  await mark('claimed', {
+    amount: original.amount,
+    token: original.token,
+    recipientHandle: original.recipientHandle,
+    note: `match of ${parentId}`,
+  });
+  return settleTip(tweet, senderHandle, asTip);
 }
 
 /** Work out who a tip is for: explicit handles, or the author of the parent post. */
@@ -352,11 +505,18 @@ async function settleTip(
   }).then((png) => (png ? uploadReceipt(png) : null));
 
   const who = paid.map((p) => p.handle).join(' ');
-  await postTweet(
+  const replyTweetId = await postTweet(
     `${who} ${senderHandle} sent you ${formatAmount(perRecipient, token.info)}. It's already in your tip wallet — receipt below.`,
     tweetId,
     media
   );
+
+  // Recorded so `match` can resolve from either the original command or the
+  // bot's own confirmation — people reply to whichever is in front of them.
+  await mark(partial ? 'pending' : 'settled', {
+    recipientHandle: paid[0]!.handle,
+    ...(replyTweetId ? { replyTweetId } : {}),
+  });
 
   return 'settled';
 }

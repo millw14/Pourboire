@@ -32,6 +32,10 @@ export interface Mention {
    * flow the product is built around.
    */
   replyToAuthor?: TwitterUser;
+  /** Root of the thread this mention sits in. Used to find rain recipients. */
+  conversationId?: string;
+  /** The specific post this replies to. Used to resolve `match`. */
+  repliedToTweetId?: string;
 }
 
 export async function getUserProfile(userId: string): Promise<TwitterUser | null> {
@@ -186,7 +190,15 @@ export async function fetchReplies(conversationId: string, max = 500): Promise<M
  */
 export async function searchMentions(query: string, sinceId?: string): Promise<Mention[]> {
   const res = await getClient().v2.search(query, {
-    'tweet.fields': ['id', 'text', 'author_id', 'created_at', 'in_reply_to_user_id'],
+    'tweet.fields': [
+      'id',
+      'text',
+      'author_id',
+      'created_at',
+      'in_reply_to_user_id',
+      'conversation_id',
+      'referenced_tweets',
+    ],
     'user.fields': ['id', 'username', 'name', 'profile_image_url'],
     expansions: ['author_id', 'in_reply_to_user_id'],
     max_results: 50,
@@ -210,6 +222,10 @@ export async function searchMentions(query: string, sinceId?: string): Promise<M
     const id = String(t.id);
     const authorId = t.author_id ? String(t.author_id) : undefined;
     const replyToId = t.in_reply_to_user_id ? String(t.in_reply_to_user_id) : undefined;
+    const referenced = Array.isArray(t.referenced_tweets)
+      ? (t.referenced_tweets as Array<{ type?: string; id?: string }>)
+      : [];
+    const repliedTo = referenced.find((r) => r.type === 'replied_to')?.id;
     return {
       id,
       text: String(t.text ?? ''),
@@ -217,6 +233,8 @@ export async function searchMentions(query: string, sinceId?: string): Promise<M
       created_at: t.created_at ? String(t.created_at) : undefined,
       author: authorId ? usersById.get(authorId) : undefined,
       replyToAuthor: replyToId ? usersById.get(replyToId) : undefined,
+      conversationId: t.conversation_id ? String(t.conversation_id) : undefined,
+      repliedToTweetId: repliedTo ? String(repliedTo) : undefined,
     };
   });
 }

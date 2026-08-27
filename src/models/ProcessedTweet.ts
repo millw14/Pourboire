@@ -36,6 +36,12 @@ export interface IProcessedTweet extends Document {
   /** Symbol or raw mint, as written. */
   token?: string;
   txHash?: string;
+  /**
+   * The bot's own confirmation reply. `match` resolves through this, so replying
+   * to the bot's receipt works as well as replying to the original command —
+   * which is what people actually do.
+   */
+  replyTweetId?: string;
   /** Why it is not settled, for operator triage. */
   note?: string;
   createdAt: Date;
@@ -56,6 +62,7 @@ const ProcessedTweetSchema = new Schema<IProcessedTweet>(
     amount: String,
     token: String,
     txHash: String,
+    replyTweetId: String,
     note: String,
   },
   { timestamps: true }
@@ -67,6 +74,9 @@ ProcessedTweetSchema.index({ status: 1, createdAt: -1 });
 // Backs the per-handle daily quota on info commands. Without a cap, anyone can
 // make the bot reply a thousand times at $0.015 each and hand you the bill.
 ProcessedTweetSchema.index({ senderHandle: 1, commandKind: 1, createdAt: -1 });
+
+// Sparse: only settled tips carry a reply id, and `match` looks up by it.
+ProcessedTweetSchema.index({ replyTweetId: 1 }, { sparse: true });
 
 export default (mongoose.models.ProcessedTweet as mongoose.Model<IProcessedTweet>) ||
   mongoose.model<IProcessedTweet>('ProcessedTweet', ProcessedTweetSchema);
