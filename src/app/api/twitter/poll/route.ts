@@ -3,7 +3,14 @@ import connectDB from '@/lib/mongodb';
 import { requireMachineCaller } from '@/lib/auth';
 import { handleError, ok } from '@/lib/api';
 import { searchMentions, postTweet, uploadReceipt, type Mention } from '@/lib/twitter';
-import { parseCommand, BOT_HANDLE, type TipCommand, type GiveawayCommand } from '@/lib/tip-command';
+import {
+  parseCommand,
+  BOT_HANDLE,
+  type TipCommand,
+  type GiveawayCommand,
+  type InfoCommand,
+} from '@/lib/tip-command';
+import { buildInfoReply, infoRepliesToday, INFO_QUOTA_PER_DAY } from '@/lib/info-commands';
 import { renderReceipt } from '@/lib/render-receipt';
 import { formatAmount } from '@/lib/tokens';
 import { parseTokenAmount, resolveToken, settleTransfer } from '@/lib/settle';
@@ -125,13 +132,18 @@ async function handleMention(tweet: Mention): Promise<MentionOutcome> {
     await ProcessedTweet.create({
       tweetId: String(tweet.id),
       status: 'claimed',
+      commandKind: command.kind,
       senderHandle,
-      amount: command.amount,
-      token: command.token,
+      amount: command.kind === 'info' ? undefined : command.amount,
+      token: command.kind === 'info' ? undefined : command.token,
     });
   } catch (e: unknown) {
     if ((e as { code?: number })?.code === 11000) return 'skipped';
     throw e;
+  }
+
+  if (command.kind === 'info') {
+    return answerInfo(tweet, senderHandle, command);
   }
 
   if (command.kind === 'giveaway') {
@@ -148,6 +160,46 @@ async function handleMention(tweet: Mention): Promise<MentionOutcome> {
   }
 
   return settleTip(tweet, senderHandle, command);
+}
+
+/**
+ * Answer a question. No money moves, so the only cost to control is the reply
+ * itself — $0.015 each, which anyone can trigger by typing a mention.
+ */
+async function answerInfo(
+  tweet: Mention,
+  senderHandle: string,
+  command: InfoCommand
+): Promise<MentionOutcome> {
+  const tweetId = String(tweet.id);
+  const mark = (status: string, note?: string) =>
+    ProcessedTweet.updateOne({ tweetId }, { $set: { status, ...(note ? { note } : {}) } });
+
+  const used = await infoRepliesToday(senderHandle);
+  if (used >= INFO_QUOTA_PER_DAY) {
+    // Silently. Replying "you've hit your limit" would itself cost $0.015 and
+    // hand a spammer exactly the reply they were trying to extract.
+    await mark('failed', `info quota reached (${used})`);
+    return 'skipped';
+  }
+
+  const replyToHandle = tweet.replyToAuthor?.username
+    ? `@${tweet.replyToAuthor.username.toLowerCase()}`
+    : null;
+
+  let reply;
+  try {
+    reply = await buildInfoReply({ command, senderHandle, replyToHandle });
+  } catch (e) {
+    await mark('failed', `info build failed: ${(e as Error).message}`);
+    return 'skipped';
+  }
+
+  const media = reply.card ? await renderReceipt(reply.card).then((png) => (png ? uploadReceipt(png) : null)) : null;
+
+  const posted = await postTweet(reply.text, tweetId, media);
+  await mark(posted ? 'settled' : 'failed', posted ? `info:${command.topic}` : 'info reply failed');
+  return posted ? 'settled' : 'skipped';
 }
 
 /** Work out who a tip is for: explicit handles, or the author of the parent post. */

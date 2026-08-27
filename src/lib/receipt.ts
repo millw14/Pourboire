@@ -20,9 +20,16 @@ export interface ReceiptParams {
   color: string;
   /** Transaction signature, truncated for display. */
   tx?: string;
-  kind: 'tip' | 'giveaway';
+  kind: 'tip' | 'giveaway' | 'wallet' | 'stats' | 'help';
   /** Winner count, for giveaway cards. */
   winners?: number;
+  /**
+   * Address to render as a QR on a wallet card. Encoded as a `solana:` URI so
+   * any wallet app can scan it straight into a send screen.
+   */
+  qr?: string;
+  /** Free-form body lines, used by stats and help cards. */
+  lines?: string;
   /**
    * Rendered along the bottom of the card, typically a verification address.
    *
@@ -42,8 +49,17 @@ const FIELD_ORDER: Array<keyof ReceiptParams> = [
   'color',
   'tx',
   'winners',
+  'qr',
+  'lines',
   'footer',
 ];
+
+const KINDS = ['tip', 'giveaway', 'wallet', 'stats', 'help'] as const;
+
+function parseKind(raw: string | null): ReceiptParams['kind'] {
+  const match = KINDS.find((k) => k === raw);
+  return match ?? 'tip';
+}
 
 function canonical(params: ReceiptParams): string {
   return FIELD_ORDER.map((k) => `${k}=${params[k] ?? ''}`).join('&');
@@ -77,13 +93,15 @@ export function verifyReceipt(search: URLSearchParams): ReceiptParams | null {
 
   const winnersRaw = search.get('winners');
   const params: ReceiptParams = {
-    kind: search.get('kind') === 'giveaway' ? 'giveaway' : 'tip',
+    kind: parseKind(search.get('kind')),
     from: search.get('from') ?? '',
     to: search.get('to') ?? '',
     amount: search.get('amount') ?? '',
     color: search.get('color') ?? '#14F195',
     tx: search.get('tx') ?? undefined,
     winners: winnersRaw ? Number(winnersRaw) : undefined,
+    qr: search.get('qr') ?? undefined,
+    lines: search.get('lines') ?? undefined,
     footer: search.get('footer') ?? undefined,
   };
 

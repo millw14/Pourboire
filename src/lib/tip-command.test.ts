@@ -159,3 +159,49 @@ test('rejects an absurd winner count', () => {
 test('a giveaway is not read as a tip', () => {
   assert.equal(parseTipCommand('@Pourboireonsol giveaway 5 SOL to 10 in 2h'), null);
 });
+
+/* ------------------------------------------------------------ info commands */
+
+test('wallet, with and without a subject', () => {
+  assert.deepEqual(parseCommand('@Pourboireonsol wallet'), {
+    kind: 'info',
+    topic: 'wallet',
+    subject: null,
+  });
+  assert.deepEqual(parseCommand('@Pourboireonsol wallet @Alice'), {
+    kind: 'info',
+    topic: 'wallet',
+    subject: '@alice',
+  });
+});
+
+test('address is a synonym for wallet', () => {
+  const parsed = parseCommand('@Pourboireonsol address @bob');
+  assert.equal(parsed?.kind, 'info');
+  assert.equal((parsed as { topic: string }).topic, 'wallet');
+});
+
+test('stats and help', () => {
+  assert.equal((parseCommand('@Pourboireonsol stats') as { topic: string })?.topic, 'stats');
+  assert.equal((parseCommand('@Pourboireonsol received @a') as { topic: string })?.topic, 'stats');
+  assert.equal((parseCommand('@Pourboireonsol help') as { topic: string })?.topic, 'help');
+  assert.equal((parseCommand('@Pourboireonsol commands') as { topic: string })?.topic, 'help');
+});
+
+test('balance is deliberately not a command', () => {
+  // Answering in-thread would publish someone's balance permanently.
+  assert.equal(parseCommand('@Pourboireonsol balance'), null);
+  assert.equal(parseCommand('@Pourboireonsol balance @alice'), null);
+});
+
+test('asking for the bot\u2019s own wallet resolves to no subject', () => {
+  // Otherwise the reply hands out an address people might tip into by accident.
+  const parsed = parseCommand('@Pourboireonsol wallet @Pourboireonsol');
+  assert.equal((parsed as { subject: string | null })?.subject, null);
+});
+
+test('info verbs do not shadow tips', () => {
+  // "tip" still wins even though these share the same prefix.
+  assert.equal(parseCommand('@Pourboireonsol tip 0.5 SOL')?.kind, 'tip');
+  assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 3 in 1h')?.kind, 'giveaway');
+});

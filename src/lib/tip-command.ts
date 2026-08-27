@@ -39,7 +39,22 @@ export interface GiveawayCommand {
   durationMinutes: number;
 }
 
-export type Command = TipCommand | GiveawayCommand;
+/**
+ * A question rather than an instruction. These move no money, so they are the
+ * one command class safe to expose to anyone who can type a mention — and the
+ * reason the bot is worth tagging when you are not sending anything.
+ */
+export interface InfoCommand {
+  kind: 'info';
+  topic: 'wallet' | 'stats' | 'help';
+  /**
+   * Whose wallet or stats are being asked for. Null means the asker's own, or
+   * the author of the post being replied to.
+   */
+  subject: string | null;
+}
+
+export type Command = TipCommand | GiveawayCommand | InfoCommand;
 
 const HANDLE = '[A-Za-z0-9_]{1,15}';
 const AMOUNT = '\\d[\\d,]*(?:\\.\\d+)?';
@@ -176,10 +191,54 @@ function parseSingle(text: string): TipCommand | null {
   return null;
 }
 
+/**
+ * `@Pourboireonsol wallet` / `... wallet @alice` / `... address`
+ * `@Pourboireonsol stats` / `... stats @alice`
+ * `@Pourboireonsol help` / `... commands`
+ *
+ * Deliberately absent: `balance`. An address is already public, but a balance
+ * is not, and answering in-thread would publish it permanently to everyone who
+ * reads the tweet. That one stays behind the dashboard.
+ */
+const INFO_RE = new RegExp(
+  `${BOT}\\s+(wallet|address|stats|received|help|commands)\\b\\s*(?:@(${HANDLE}))?`,
+  'i'
+);
+
+const INFO_TOPICS: Record<string, InfoCommand['topic']> = {
+  wallet: 'wallet',
+  address: 'wallet',
+  stats: 'stats',
+  received: 'stats',
+  help: 'help',
+  commands: 'help',
+};
+
+function parseInfo(text: string): InfoCommand | null {
+  const m = text.match(INFO_RE);
+  if (!m) return null;
+
+  const topic = INFO_TOPICS[m[1]!.toLowerCase()];
+  if (!topic) return null;
+
+  const rawSubject = m[2];
+  const subject = rawSubject ? normalise(rawSubject) : null;
+
+  return {
+    kind: 'info',
+    topic,
+    // Asking for the bot's own wallet is a mistake worth ignoring rather than
+    // answering with an address people might tip into by accident.
+    subject: subject && isBot(subject) ? null : subject,
+  };
+}
+
 export function parseCommand(text: string): Command | null {
-  // Giveaway first: it is the most specific shape, and "giveaway 5 SOL to 10"
-  // would otherwise be read as a tip.
-  return parseGiveaway(text) ?? parseMulti(text) ?? parseSingle(text);
+  // Order matters. Giveaway is the most specific shape and "giveaway 5 SOL to
+  // 10" would otherwise read as a tip. Info goes before the tip patterns for
+  // the same reason: those verbs carry no amount, so nothing else can match
+  // them, but checking first avoids relying on that.
+  return parseGiveaway(text) ?? parseInfo(text) ?? parseMulti(text) ?? parseSingle(text);
 }
 
 /** Back-compatible helper for callers that only care about tips. */
