@@ -9,6 +9,7 @@ import { CopyButton, truncateMiddle } from '@/components/ui/copy-button';
 import { exampleCommand } from '@/lib/tip-command';
 import { FundDialog } from './fund-dialog';
 import { WithdrawDialog } from './withdraw-dialog';
+import { CashOutCard } from './cash-out-card';
 import type { MeResponse, HistoryItem } from './types';
 
 type Tab = 'overview' | 'activity';
@@ -475,6 +476,13 @@ function BalanceCard({
 }
 
 function Overview({ data, onOpenActivity }: { data: MeResponse; onOpenActivity: () => void }) {
+  // Only USDG counts toward a dollar figure. ETH is gas, and a tokenised equity
+  // is worth whatever the market says today — converting either at 1:1 would
+  // put a confidently wrong number in front of someone about to cash out.
+  const usdValue = (data.wallet?.balances ?? [])
+    .filter((b) => b.symbol === 'USDG')
+    .reduce((sum, b) => sum + Number(b.raw) / 1e6, 0);
+
   return (
     <div className="space-y-6">
       {data.pending.length > 0 && (
@@ -502,6 +510,8 @@ function Overview({ data, onOpenActivity }: { data: MeResponse; onOpenActivity: 
           </ul>
         </section>
       )}
+
+      <CashOutCard usdValue={usdValue} />
 
       <div className="grid gap-6 md:grid-cols-2">
         <section className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur-sm">

@@ -11,7 +11,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types \"src/lib/*.test.ts\"",
+    "test": "node --test --experimental-strip-types \"src/lib/**/*.test.ts\"",
     "check": "npm run typecheck && npm run lint && npm run test"
   },
   "dependencies": {

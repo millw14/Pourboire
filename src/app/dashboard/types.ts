@@ -68,3 +68,33 @@ export interface WithdrawResponse {
   to?: string;
   message?: string;
 }
+
+/** Shape returned by `GET /api/fiat`. */
+export interface FiatResponse {
+  success: true;
+  rate: {
+    currency: string;
+    perUsd: number;
+    asOf: string;
+    symbol: string;
+    /** Always true. Named so no caller mistakes this for a payout figure. */
+    indicative: true;
+  } | null;
+  currencies: Array<{ code: string; name: string; symbol: string }>;
+  preferredCurrency: string;
+  payout: {
+    available: boolean;
+    reason?: string;
+    currencies: readonly string[];
+  };
+  card: {
+    available: boolean;
+    reason?: string;
+    current: { status: string; last4?: string; brand?: string } | null;
+  };
+  verification: {
+    status: 'unstarted' | 'pending' | 'action_required' | 'verified' | 'rejected';
+    reason?: string;
+    requiredFor: string[];
+  };
+}

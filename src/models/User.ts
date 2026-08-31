@@ -43,6 +43,36 @@ export interface IUser extends Document {
   claimed: boolean;
   history: ITransaction[];
   pendingClaims: IPendingClaim[];
+  /**
+   * Identity, held only because fiat requires it.
+   *
+   * This is the line the product is built around: receiving a tip needs nothing
+   * but an X handle, and that stays true. Turning a balance into local currency
+   * or a card is money transmission, and no licensed provider will do it for an
+   * anonymous handle. So verification is attached late, to the people who ask
+   * for fiat, rather than being a wall in front of everyone.
+   *
+   * We hold a status and the provider's reference, never identity documents —
+   * those go straight to the provider's hosted flow and never touch this app.
+   */
+  verification?: {
+    status: 'unstarted' | 'pending' | 'action_required' | 'verified' | 'rejected';
+    providerRef?: string;
+    provider?: string;
+    reason?: string;
+    updatedAt?: Date;
+  };
+  /** Preferred local currency, for display. Not a payout instruction. */
+  preferredCurrency?: string;
+  /** Reference to a card issued by the provider. Never card data itself. */
+  card?: {
+    providerRef: string;
+    provider: string;
+    status: 'pending' | 'active' | 'frozen' | 'closed';
+    last4?: string;
+    brand?: string;
+    requestedAt: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -96,6 +126,30 @@ const UserSchema = new Schema<IUser>(
     claimed: { type: Boolean, default: false },
     history: [TransactionSchema],
     pendingClaims: [PendingClaimSchema],
+
+    // Identity and card state. Deliberately references only — no identity
+    // documents and no card data are stored here, because holding either would
+    // pull this app into PCI and KYC scope it has no business being in.
+    verification: {
+      status: {
+        type: String,
+        enum: ['unstarted', 'pending', 'action_required', 'verified', 'rejected'],
+        default: 'unstarted',
+      },
+      providerRef: String,
+      provider: String,
+      reason: String,
+      updatedAt: Date,
+    },
+    preferredCurrency: String,
+    card: {
+      providerRef: String,
+      provider: String,
+      status: { type: String, enum: ['pending', 'active', 'frozen', 'closed'] },
+      last4: String,
+      brand: String,
+      requestedAt: Date,
+    },
   },
   { timestamps: true }
 );
