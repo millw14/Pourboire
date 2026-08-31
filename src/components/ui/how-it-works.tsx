@@ -90,11 +90,11 @@ const EXTRAS = [
   {
     title: 'Any token',
     code: `${BOT_HANDLE} tip 100000 BONK`,
-    body: 'SOL, USDC, BONK, WIF and more — or paste any mint address.',
+    body: 'USDG, ETH, or tokenised stocks like NVDA and SPY — or paste any contract address.',
   },
   {
     title: 'Several people at once',
-    code: `${BOT_HANDLE} split 3 SOL @a @b @c`,
+    code: `${BOT_HANDLE} split 30 USDG @a @b @c`,
     body: 'Use "each" instead of "split" to give them all the full amount.',
   },
   {

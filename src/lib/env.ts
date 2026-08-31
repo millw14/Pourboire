@@ -46,31 +46,26 @@ export const twitterCredentials = () => ({
 });
 
 /**
- * Which Solana cluster this deployment operates on. Everything — the client
- * wallet adapter, the server RPC, the explorer links — derives from this single
- * value so the browser can never think it is on devnet while the server signs
+ * Which Robinhood Chain network this deployment operates on. Everything — the
+ * wallet config, the server RPC, the explorer links — derives from this single
+ * value, so the browser can never think it is on testnet while the server signs
  * mainnet transfers.
  */
-export type Cluster = 'mainnet-beta' | 'devnet' | 'testnet';
+export type Cluster = 'mainnet' | 'testnet';
 
 export function cluster(): Cluster {
-  const raw = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER || 'devnet').toLowerCase();
-  if (raw.includes('main')) return 'mainnet-beta';
-  if (raw.includes('test')) return 'testnet';
-  return 'devnet';
+  // Defaults to testnet: a misconfigured deployment should move play money, not
+  // real money.
+  const raw = (process.env.NEXT_PUBLIC_CHAIN_NETWORK || 'testnet').toLowerCase();
+  return raw.includes('main') ? 'mainnet' : 'testnet';
 }
 
 export function rpcUrl(): string {
-  const explicit = process.env.NEXT_PUBLIC_SOLANA_RPC_URL;
+  const explicit = process.env.NEXT_PUBLIC_CHAIN_RPC_URL;
   if (explicit) return explicit;
-  switch (cluster()) {
-    case 'mainnet-beta':
-      return 'https://api.mainnet-beta.solana.com';
-    case 'testnet':
-      return 'https://api.testnet.solana.com';
-    default:
-      return 'https://api.devnet.solana.com';
-  }
+  return cluster() === 'mainnet'
+    ? 'https://rpc.mainnet.chain.robinhood.com'
+    : 'https://rpc.testnet.chain.robinhood.com';
 }
 
 export const isProduction = () => process.env.NODE_ENV === 'production';

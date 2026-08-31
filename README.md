@@ -1,7 +1,7 @@
 # Pourboire
 
-Tip anyone on X with Solana. Reply to a post with `@Pourboireonsol tip 0.5 SOL` and the author
-gets the SOL — no wallet needed on their side. If they haven't signed up, the tip lands in a
+Tip anyone on X with Robinhood Chain. Reply to a post with `@Pourboireonsol tip 0.5 USDG` and the author
+gets the USDG — no wallet needed on their side. If they haven't signed up, the tip lands in a
 custodial wallet that becomes theirs when they do.
 
 ---
@@ -30,7 +30,7 @@ were exposed through the API rather than through the ciphertext. Sweep to fresh 
 - A MongoDB database
 - A Privy app (authentication) — https://dashboard.privy.io
 - X/Twitter API credentials for the bot account
-- A Solana RPC endpoint that serves `getBlock` (the public one is rate limited to the point of
+- A Robinhood Chain RPC endpoint that serves `getBlock` (the public one is rate limited to the point of
   uselessness, and giveaway draws need `getBlock` specifically)
 
 ## Setup
@@ -80,10 +80,10 @@ src/
     page.tsx              Landing page. No providers above it, so it ships no wallet code.
     [handle]/             Public creator profiles: /@alice
     giveaway/[id]/        Public giveaway verification
-    dashboard/            The only route that loads Privy + the Solana wallet adapter
+    dashboard/            The only route that loads Privy + the Robinhood Chain wallet adapter
     api/
       me/                 GET  — everything the dashboard needs, one authenticated call
-      wallet/withdraw/    POST — move SOL out of the caller's own tip wallet
+      wallet/withdraw/    POST — move USDG out of the caller's own tip wallet
       wallet/swap/        GET quote, POST execute — Jupiter, inside the caller's wallet
       og/tip/             GET  — HMAC-signed receipt card images
       twitter/poll/       GET/POST — settle tips and giveaways (machine-authenticated)
@@ -146,13 +146,13 @@ All case-insensitive. `@Pourboire` also works as a shorter form of the bot handl
 ### Tips
 
 ```
-@Pourboireonsol tip 0.5 SOL                tips the author of the post you replied to
-@Pourboireonsol tip 0.5 SOL @alice         tips @alice
-@Pourboireonsol tip @alice 0.5             same, token defaults to SOL
+@Pourboireonsol tip 0.5 USDG                tips the author of the post you replied to
+@Pourboireonsol tip 0.5 USDG @alice         tips @alice
+@Pourboireonsol tip @alice 0.5             same, token defaults to USDG
 @Pourboireonsol tip 100000 BONK            any token in the registry
 @Pourboireonsol tip 5 <mint address>       any SPL token, by mint
-@Pourboireonsol tip 1 SOL each @a @b @c    the full amount to each of them
-@Pourboireonsol split 3 SOL @a @b @c       one amount divided between them
+@Pourboireonsol tip 1 USDG each @a @b @c    the full amount to each of them
+@Pourboireonsol split 3 USDG @a @b @c       one amount divided between them
 ```
 
 Symbols resolve against a curated registry in `src/lib/tokens.ts` — deliberately not Jupiter's
@@ -161,13 +161,13 @@ the registry must be tipped by mint address, where the sender has already decide
 they mean.
 
 The first SPL tip to someone who has never held that token opens an account for them, and the
-**sender** pays its rent (~0.00204 SOL). The bot says so rather than letting the transaction fail.
+**sender** pays its rent (~0.00204 USDG). The bot says so rather than letting the transaction fail.
 
 ### Giveaways
 
 ```
-@Pourboireonsol giveaway 5 SOL to 10 in 2h
-@Pourboireonsol giveaway 1 SOL to 3 people in 30m
+@Pourboireonsol giveaway 5 USDG to 10 in 2h
+@Pourboireonsol giveaway 1 USDG to 3 people in 30m
 @Pourboireonsol giveaway 10 USDC to 5 winners in 1d
 ```
 
@@ -180,13 +180,13 @@ Three steps, and the *order* is what makes it verifiable:
 
 1. **Commit.** When the giveaway opens, a random seed is generated and only its SHA-256 hash is
    published, in the announcement tweet. A hash reveals nothing about the draw.
-2. **Beacon.** When the window closes, the blockhash of a finalised Solana slot is taken. That
+2. **Beacon.** When the window closes, the blockhash of a finalised Robinhood Chain slot is taken. That
    value did not exist at commit time, so the seed cannot have been chosen to favour anyone.
 3. **Reveal.** The seed is published. `HMAC-SHA256(seed, beacon)` drives a Fisher-Yates shuffle
    over the sorted entry list, with rejection sampling so no index is favoured by modulo bias.
 
 Neither side can steer it alone: we pick the seed but not the beacon, and the chain never sees
-the seed. Grinding the beacon would mean rewriting Solana history.
+the seed. Grinding the beacon would mean rewriting Robinhood Chain history.
 
 `/giveaway/<tweetId>` publishes the commitment, the seed, the slot, the blockhash, the full entry
 list and the algorithm — and **re-runs the draw server-side**, displaying a mismatch rather than
@@ -223,11 +223,11 @@ That link charge dominates everything else here, so **no bot reply contains a UR
 transaction signature and the verification address are rendered onto the receipt card
 instead — text inside an image is not parsed by X, so the reader still gets both.
 
-| Tip size | Value at $102/SOL | With a link | Without |
+| Tip size | Value at $102/USDG | With a link | Without |
 | --- | --- | --- | --- |
-| 0.01 SOL | $1.02 | 22.1% | 3.9% |
-| 0.05 SOL | $5.10 | 4.4% | 0.8% |
-| 0.5 SOL | $50.98 | 0.4% | 0.1% |
+| 0.01 USDG | $1.02 | 22.1% | 3.9% |
+| 0.05 USDG | $5.10 | 4.4% | 0.8% |
+| 0.5 USDG | $50.98 | 0.4% | 0.1% |
 
 `containsLink()` in `src/lib/twitter.ts` guards this, and `postTweet` logs a loud warning if
 a reply would be billed at the link rate. X auto-links bare domains, so a template saying
@@ -235,7 +235,7 @@ a reply would be billed at the link rate. X auto-links bare domains, so a templa
 `src/lib/twitter.test.ts` pins every canned reply against that.
 
 A giveaway with 1,000 replies costs roughly **$13** to collect entries, which is fine
-against a 5 SOL prize and not against a 0.5 SOL one. There is deliberately no minimum tip
+against a 5 USDG prize and not against a 0.5 USDG one. There is deliberately no minimum tip
 size yet; revisit once there is real usage data.
 
 Idle polling is free: a search returning no new mentions returns no billable resources.
@@ -243,7 +243,7 @@ Idle polling is free: a search returning no new mentions returns no billable res
 ## Known limitations
 
 - **Swaps are dashboard-only.** Jupiter is wired into `/api/wallet/swap` for converting balances
-  by hand. It is deliberately *not* wired into the tip bot: auto-selling someone's SOL because
+  by hand. It is deliberately *not* wired into the tip bot: auto-selling someone's USDG because
   they tweeted "tip 100k BONK" would mean silently trading at whatever slippage the route
   carries, triggered by a tweet.
 - **Jupiter's API host has moved before.** `JUPITER_API_URL` overrides it; the default is their
@@ -254,7 +254,7 @@ Idle polling is free: a search returning no new mentions returns no billable res
   loops, but on serverless it is not a global limiter. Put a real one at the edge before any
   volume.
 - **`programs/soltip` is not deployed or used.** It has a placeholder program id and the escrow
-  PDA cannot release SOL as written. Treat it as a sketch, not a component.
+  PDA cannot release USDG as written. Treat it as a sketch, not a component.
 - **The server holds custodial keys.** Moving unclaimed tips into an on-chain escrow would remove
   the largest risk in the system; that work has not been done.
 

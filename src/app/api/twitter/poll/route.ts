@@ -451,9 +451,9 @@ async function settleTip(
     const entry = {
       amount: perRecipient.toString(),
       tokenSymbol: token.info.symbol,
-      tokenMint: token.info.mint,
+      tokenMint: token.info.address,
       tokenDecimals: token.info.decimals,
-      txHash: result.outcome.signature,
+      txHash: result.outcome.hash,
       status: result.outcome.status,
       date: new Date(),
     };
@@ -472,7 +472,7 @@ async function settleTip(
       }
     );
 
-    paid.push({ handle, signature: result.outcome.signature });
+    paid.push({ handle, signature: result.outcome.hash });
   }
 
   if (paid.length === 0) {
@@ -527,7 +527,7 @@ async function recordPendingClaims(
   tweetId: string,
   senderHandle: string,
   amount: bigint,
-  token: { info: { symbol: string; mint: string | null; decimals: number } }
+  token: { info: { symbol: string; address: string | null; decimals: number } }
 ) {
   for (const handle of recipients) {
     const { user } = await ensureCustodialWallet({ handle });
@@ -538,7 +538,7 @@ async function recordPendingClaims(
           pendingClaims: {
             amount: amount.toString(),
             tokenSymbol: token.info.symbol,
-            tokenMint: token.info.mint,
+            tokenMint: token.info.address,
             tokenDecimals: token.info.decimals,
             fromTx: tweetId,
             sender: senderHandle,

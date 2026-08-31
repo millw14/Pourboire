@@ -1,12 +1,12 @@
 import { NextRequest } from 'next/server';
-import { PublicKey } from '@solana/web3.js';
 import connectDB from '@/lib/mongodb';
 import { requireCaller } from '@/lib/auth';
 import { handleError, ok, rateLimit, tooManyRequests } from '@/lib/api';
 import { resolveCallerUser } from '@/lib/wallets';
 import { cluster } from '@/lib/env';
-import { getConnection, lamportsToSol } from '@/lib/solana';
-import { findTokenBySymbol, formatAmount } from '@/lib/tokens';
+import { nativeBalance, tokenBalance, isAddress } from '@/lib/chain';
+import { KNOWN_TOKENS, NATIVE, isNative } from '@/lib/tokens';
+import { tokenFromRecord, formatAmount } from '@/lib/tokens';
 import type { ITransaction, IPendingClaim } from '@/models/User';
 
 /**
@@ -25,15 +25,7 @@ const HISTORY_LIMIT = 100;
 
 /** Rebuild a token descriptor from what the record stored alongside the amount. */
 function tokenOf(record: { tokenSymbol: string; tokenMint: string | null; tokenDecimals: number }) {
-  return (
-    findTokenBySymbol(record.tokenSymbol) ?? {
-      symbol: record.tokenSymbol,
-      name: record.tokenSymbol,
-      mint: record.tokenMint,
-      decimals: record.tokenDecimals,
-      color: '#8B8B8B',
-    }
-  );
+  return tokenFromRecord(record);
 }
 
 export async function GET(req: NextRequest) {
@@ -59,17 +51,38 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Balance is best-effort: an RPC hiccup should not blank the whole dashboard,
-    // so it comes back as null and the UI says "unavailable" rather than "0 SOL".
-    let balanceSol: number | null = null;
+    // Balances are best-effort: an RPC hiccup should not blank the whole
+    // dashboard, so they come back null and the UI says "unavailable" rather
+    // than "0", which would read as an empty wallet.
+    //
+    // Both ETH and the tokens are returned, because holding USDG with no ETH is
+    // the state people actually get stuck in — you cannot send a token you own
+    // without gas to move it.
+    let balances: Array<{ symbol: string; amount: string; raw: string; isGas: boolean }> | null =
+      null;
     let balanceError = false;
-    if (user.walletAddress) {
+    if (user.walletAddress && isAddress(user.walletAddress)) {
       try {
-        const lamports = await getConnection().getBalance(
-          new PublicKey(user.walletAddress),
-          'confirmed'
-        );
-        balanceSol = lamportsToSol(lamports);
+        const address = user.walletAddress;
+        const [eth, ...tokens] = await Promise.all([
+          nativeBalance(address),
+          ...KNOWN_TOKENS.filter((t) => !isNative(t)).map((t) => tokenBalance(t.address!, address)),
+        ]);
+
+        const held = KNOWN_TOKENS.filter((t) => !isNative(t))
+          .map((token, i) => ({ token, raw: tokens[i] ?? 0n }))
+          .filter(({ raw }) => raw > 0n)
+          .map(({ token, raw }) => ({
+            symbol: token.symbol,
+            amount: formatAmount(raw, token),
+            raw: raw.toString(),
+            isGas: false,
+          }));
+
+        balances = [
+          { symbol: 'ETH', amount: formatAmount(eth, NATIVE), raw: eth.toString(), isGas: true },
+          ...held,
+        ];
       } catch {
         balanceError = true;
       }
@@ -113,7 +126,7 @@ export async function GET(req: NextRequest) {
       },
       wallet: {
         address: user.walletAddress,
-        balanceSol,
+        balances,
         balanceError,
       },
       pending,

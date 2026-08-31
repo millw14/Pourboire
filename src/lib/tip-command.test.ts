@@ -18,10 +18,10 @@ import {
 test('parses the command the homepage teaches', () => {
   // This exact string was unparseable before: the tutorial said "@Pourboire"
   // while the regex demanded "@pourboireonsol" plus an explicit @recipient.
-  assert.deepEqual(parseTipCommand('@Pourboire tip 0.5 SOL'), {
+  assert.deepEqual(parseTipCommand('@Pourboire tip 0.5 USDG'), {
     kind: 'tip',
     amount: '0.5',
-    token: 'SOL',
+    token: 'USDG',
     recipientHandle: null,
     mode: 'single',
     recipients: [],
@@ -34,32 +34,32 @@ test('the documented examples are parseable', () => {
 });
 
 test('parses amount, token, then recipient', () => {
-  const c = parseTipCommand('@Pourboireonsol tip 1.25 SOL @alice');
+  const c = parseTipCommand('@Pourboireonsol tip 1.25 USDG @alice');
   assert.equal(c?.amount, '1.25');
   assert.equal(c?.recipientHandle, '@alice');
 });
 
 test('parses recipient before amount', () => {
-  const c = parseTipCommand('@Pourboireonsol tip @bob 2 usdc');
+  const c = parseTipCommand('@Pourboireonsol tip @bob 2 eth');
   assert.equal(c?.amount, '2');
-  assert.equal(c?.token, 'USDC');
+  assert.equal(c?.token, 'ETH');
   assert.equal(c?.recipientHandle, '@bob');
 });
 
-test('defaults to SOL when no token is given', () => {
-  assert.equal(parseTipCommand('@Pourboireonsol tip 0.1 @carol')?.token, 'SOL');
+test('defaults to USDG when no token is given', () => {
+  assert.equal(parseTipCommand('@Pourboireonsol tip 0.1 @carol')?.token, 'USDG');
 });
 
 test('is case insensitive and normalises handles', () => {
-  assert.equal(parseTipCommand('@POURBOIREONSOL TIP 1 SOL @DaVe')?.recipientHandle, '@dave');
+  assert.equal(parseTipCommand('@POURBOIREONSOL TIP 1 USDG @DaVe')?.recipientHandle, '@dave');
 });
 
 test('reads a command that appears mid-tweet', () => {
-  assert.equal(parseTipCommand('great post! @Pourboireonsol tip 0.2 SOL')?.amount, '0.2');
+  assert.equal(parseTipCommand('great post! @Pourboireonsol tip 0.2 USDG')?.amount, '0.2');
 });
 
 test('refuses to tip the bot itself', () => {
-  assert.equal(parseTipCommand('@Pourboireonsol tip 1 SOL @Pourboireonsol')?.recipientHandle, null);
+  assert.equal(parseTipCommand('@Pourboireonsol tip 1 USDG @Pourboireonsol')?.recipientHandle, null);
 });
 
 test('rejects text that is not a command', () => {
@@ -69,32 +69,33 @@ test('rejects text that is not a command', () => {
 });
 
 test('rejects a zero amount', () => {
-  assert.equal(parseCommand('@Pourboireonsol tip 0 SOL @alice'), null);
+  assert.equal(parseCommand('@Pourboireonsol tip 0 USDG @alice'), null);
 });
 
 test('does not swallow a trailing word into the amount', () => {
-  // "soldier" starts with "sol" - the negative lookahead must stop the
-  // no-recipient pattern claiming it as a token.
-  const c = parseTipCommand('@Pourboireonsol tip 0.5 soldier');
-  assert.equal(c?.token, 'SOL');
+  // "ethereal" starts with "eth" — the negative lookahead must stop the
+  // no-recipient pattern claiming it as a token and charging the wrong one.
+  const c = parseTipCommand('@Pourboireonsol tip 0.5 ethereal');
+  assert.equal(c?.token, 'USDG');
   assert.equal(c?.amount, '0.5');
 });
 
 /* ----------------------------------------------------------- token support */
 
-test('parses memecoin symbols', () => {
-  const c = parseTipCommand('@Pourboireonsol tip 100000 BONK @alice');
-  assert.equal(c?.token, 'BONK');
+test('parses tokenised equity symbols', () => {
+  const c = parseTipCommand('@Pourboireonsol tip 100000 NVDA @alice');
+  assert.equal(c?.token, 'NVDA');
   assert.equal(c?.amount, '100000');
 });
 
 test('strips thousands separators from amounts', () => {
-  assert.equal(parseTipCommand('@Pourboireonsol tip 1,000,000 BONK @alice')?.amount, '1000000');
+  assert.equal(parseTipCommand('@Pourboireonsol tip 1,000,000 NVDA @alice')?.amount, '1000000');
 });
 
-test('accepts a raw mint address and preserves its casing', () => {
-  // Base58 is case-sensitive: upper-casing a mint address breaks it.
-  const mint = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+test('accepts a raw contract address and preserves its casing', () => {
+  // EIP-55 encodes the checksum in the letter casing, so upper-casing an
+  // address destroys the one check that catches a mistyped one.
+  const mint = '0xAbCdEf0123456789AbCdEf0123456789AbCdEf01';
   const c = parseTipCommand(`@Pourboireonsol tip 5 ${mint} @alice`);
   assert.equal(c?.token, mint);
 });
@@ -102,63 +103,63 @@ test('accepts a raw mint address and preserves its casing', () => {
 /* ------------------------------------------------------ multiple recipients */
 
 test('tips several people the same amount', () => {
-  const c = parseTipCommand('@Pourboireonsol tip 1 SOL each @a @b @c');
+  const c = parseTipCommand('@Pourboireonsol tip 1 USDG each @a @b @c');
   assert.equal(c?.mode, 'each');
   assert.deepEqual(c?.recipients, ['@a', '@b', '@c']);
 });
 
 test('splits one amount between several people', () => {
-  const c = parseTipCommand('@Pourboireonsol split 3 SOL @a @b @c');
+  const c = parseTipCommand('@Pourboireonsol split 3 USDG @a @b @c');
   assert.equal(c?.mode, 'split');
   assert.equal(c?.recipients.length, 3);
 });
 
 test('deduplicates repeated recipients', () => {
-  const c = parseTipCommand('@Pourboireonsol tip 1 SOL each @a @a @b');
+  const c = parseTipCommand('@Pourboireonsol tip 1 USDG each @a @a @b');
   assert.deepEqual(c?.recipients, ['@a', '@b']);
 });
 
 test('excludes the bot from a recipient list', () => {
-  const c = parseTipCommand('@Pourboireonsol tip 1 SOL each @a @Pourboireonsol @b');
+  const c = parseTipCommand('@Pourboireonsol tip 1 USDG each @a @Pourboireonsol @b');
   assert.deepEqual(c?.recipients, ['@a', '@b']);
 });
 
 /* ------------------------------------------------------------- giveaways */
 
 test('parses a giveaway with hours', () => {
-  assert.deepEqual(parseCommand('@Pourboireonsol giveaway 5 SOL to 10 in 2h'), {
+  assert.deepEqual(parseCommand('@Pourboireonsol giveaway 5 USDG to 10 in 2h'), {
     kind: 'giveaway',
     amount: '5',
-    token: 'SOL',
+    token: 'USDG',
     winners: 10,
     durationMinutes: 120,
   });
 });
 
 test('parses a giveaway with the word "people" and minutes', () => {
-  const g = parseCommand('@Pourboireonsol giveaway 1 SOL to 3 people in 30m');
+  const g = parseCommand('@Pourboireonsol giveaway 1 USDG to 3 people in 30m');
   assert.equal(g?.kind, 'giveaway');
   assert.equal(g?.kind === 'giveaway' && g.durationMinutes, 30);
 });
 
 test('parses a giveaway in days', () => {
-  const g = parseCommand('@Pourboireonsol giveaway 10 USDC to 5 winners in 1d');
+  const g = parseCommand('@Pourboireonsol giveaway 10 NVDA to 5 winners in 1d');
   assert.equal(g?.kind === 'giveaway' && g.durationMinutes, 1440);
-  assert.equal(g?.kind === 'giveaway' && g.token, 'USDC');
+  assert.equal(g?.kind === 'giveaway' && g.token, 'NVDA');
 });
 
 test('rejects giveaway windows that are too short or too long', () => {
-  assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 10 in 1m'), null);
-  assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 10 in 30d'), null);
+  assert.equal(parseCommand('@Pourboireonsol giveaway 5 USDG to 10 in 1m'), null);
+  assert.equal(parseCommand('@Pourboireonsol giveaway 5 USDG to 10 in 30d'), null);
 });
 
 test('rejects an absurd winner count', () => {
-  assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 0 in 2h'), null);
-  assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 500 in 2h'), null);
+  assert.equal(parseCommand('@Pourboireonsol giveaway 5 USDG to 0 in 2h'), null);
+  assert.equal(parseCommand('@Pourboireonsol giveaway 5 USDG to 500 in 2h'), null);
 });
 
 test('a giveaway is not read as a tip', () => {
-  assert.equal(parseTipCommand('@Pourboireonsol giveaway 5 SOL to 10 in 2h'), null);
+  assert.equal(parseTipCommand('@Pourboireonsol giveaway 5 USDG to 10 in 2h'), null);
 });
 
 /* ------------------------------------------------------------ info commands */
@@ -203,43 +204,43 @@ test('asking for the bot\u2019s own wallet resolves to no subject', () => {
 
 test('info verbs do not shadow tips', () => {
   // "tip" still wins even though these share the same prefix.
-  assert.equal(parseCommand('@Pourboireonsol tip 0.5 SOL')?.kind, 'tip');
-  assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 3 in 1h')?.kind, 'giveaway');
+  assert.equal(parseCommand('@Pourboireonsol tip 0.5 USDG')?.kind, 'tip');
+  assert.equal(parseCommand('@Pourboireonsol giveaway 5 USDG to 3 in 1h')?.kind, 'giveaway');
 });
 
 /* --------------------------------------------------------------- rain/match */
 
 test('rain, with and without a recipient count', () => {
-  assert.deepEqual(parseCommand('@Pourboireonsol rain 5 SOL'), {
+  assert.deepEqual(parseCommand('@Pourboireonsol rain 5 USDG'), {
     kind: 'rain',
     amount: '5',
-    token: 'SOL',
+    token: 'USDG',
     maxRecipients: RAIN_DEFAULT_RECIPIENTS,
   });
-  assert.deepEqual(parseCommand('@Pourboireonsol rain 5 SOL to 20'), {
+  assert.deepEqual(parseCommand('@Pourboireonsol rain 5 USDG to 20'), {
     kind: 'rain',
     amount: '5',
-    token: 'SOL',
+    token: 'USDG',
     maxRecipients: 20,
   });
-  assert.deepEqual(parseCommand('@Pourboireonsol rain 2 SOL among 7 people'), {
+  assert.deepEqual(parseCommand('@Pourboireonsol rain 2 USDG among 7 people'), {
     kind: 'rain',
     amount: '2',
-    token: 'SOL',
+    token: 'USDG',
     maxRecipients: 7,
   });
 });
 
-test('rain defaults to SOL and carries other tokens', () => {
-  assert.equal((parseCommand('@Pourboireonsol rain 100') as { token: string })?.token, 'SOL');
+test('rain defaults to USDG and carries other tokens', () => {
+  assert.equal((parseCommand('@Pourboireonsol rain 100') as { token: string })?.token, 'USDG');
   assert.equal(
-    (parseCommand('@Pourboireonsol rain 1000000 BONK to 5') as { token: string })?.token,
-    'BONK'
+    (parseCommand('@Pourboireonsol rain 1000000 NVDA to 5') as { token: string })?.token,
+    'NVDA'
   );
 });
 
 test('rain strips thousands separators like every other amount', () => {
-  assert.equal((parseCommand('@Pourboireonsol rain 1,500 BONK') as { amount: string })?.amount, '1500');
+  assert.equal((parseCommand('@Pourboireonsol rain 1,500 NVDA') as { amount: string })?.amount, '1500');
 });
 
 test('match takes no arguments', () => {
@@ -248,14 +249,14 @@ test('match takes no arguments', () => {
 });
 
 test('rain is not read as a giveaway or a tip', () => {
-  // "rain 5 SOL to 20" ends in a bare number, which the tip patterns would
+  // "rain 5 USDG to 20" ends in a bare number, which the tip patterns would
   // otherwise be happy to treat as part of the amount.
-  assert.equal(parseCommand('@Pourboireonsol rain 5 SOL to 20')?.kind, 'rain');
-  assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 20 in 1h')?.kind, 'giveaway');
-  assert.equal(parseCommand('@Pourboireonsol tip 5 SOL @alice')?.kind, 'tip');
+  assert.equal(parseCommand('@Pourboireonsol rain 5 USDG to 20')?.kind, 'rain');
+  assert.equal(parseCommand('@Pourboireonsol giveaway 5 USDG to 20 in 1h')?.kind, 'giveaway');
+  assert.equal(parseCommand('@Pourboireonsol tip 5 USDG @alice')?.kind, 'tip');
 });
 
 test('rain rejects a zero or absent amount', () => {
-  assert.equal(parseCommand('@Pourboireonsol rain 0 SOL'), null);
+  assert.equal(parseCommand('@Pourboireonsol rain 0 USDG'), null);
   assert.equal(parseCommand('@Pourboireonsol rain'), null);
 });

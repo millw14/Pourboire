@@ -6,7 +6,7 @@ import './globals.css';
  * The root layout deliberately mounts NO providers.
  *
  * It used to wrap every route in PrivyProvider + WalletProvider, which pulled
- * Privy, WalletConnect, the Coinbase SDK, @solana/web3.js, libphonenumber and
+ * Privy, WalletConnect, the Coinbase SDK, viem, libphonenumber and
  * styled-components into the bundle for the marketing pages as well — around
  * 5MB of JavaScript to render a headline and a footer. Worse, when Privy failed
  * to initialise the error boundary replaced the entire site, landing page
@@ -30,17 +30,17 @@ const geistMono = Geist_Mono({
 
 const SITE_URL = 'https://pourboire.tips';
 const DESCRIPTION =
-  'Reply to any post on X with @Pourboireonsol to send a SOL tip. If they have not signed up yet, we hold it for them.';
+  'Reply to any post on X with @Pourboireonsol to send a dollar tip. If they have not signed up yet, we hold it for them.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: 'Pourboire — Tip anyone on X with Solana',
+    default: 'Pourboire — Tip anyone on X, on Robinhood Chain',
     template: '%s · Pourboire',
   },
   description: DESCRIPTION,
   openGraph: {
-    title: 'Pourboire — Tip anyone on X with Solana',
+    title: 'Pourboire — Tip anyone on X, on Robinhood Chain',
     description: DESCRIPTION,
     url: SITE_URL,
     siteName: 'Pourboire',
@@ -48,7 +48,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Pourboire — Tip anyone on X with Solana',
+    title: 'Pourboire — Tip anyone on X, on Robinhood Chain',
     description: DESCRIPTION,
     site: '@Pourboireonsol',
   },

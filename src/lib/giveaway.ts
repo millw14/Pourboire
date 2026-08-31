@@ -1,15 +1,12 @@
 import 'server-only';
-import { Keypair, PublicKey } from '@solana/web3.js';
 import Giveaway, { type IGiveaway } from '@/models/Giveaway';
-import User from '@/models/User';
-import { decryptPrivateKey } from './crypto';
+import User, { type IUser } from '@/models/User';
 import { commitmentFor, drawWinners, generateSeed, splitPrize } from './draw';
 import { baseUrl } from './env';
 import { renderReceipt } from './render-receipt';
-import { fetchBeacon, getConnection, spendableLamports } from './solana';
-import { buildSolPayouts, buildSplTransfer, recipientNeedsAccount, sendInstructions } from './spl';
+import { estimateFeeWei, fetchBeacon, nativeBalance, tokenBalance } from './chain';
 import { formatAmount } from './tokens';
-import { parseTokenAmount, resolveToken, type ResolvedToken } from './settle';
+import { parseTokenAmount, resolveToken, settleTransfer, type ResolvedToken } from './settle';
 import { postTweet, uploadReceipt, fetchReplies } from './twitter';
 import { ensureCustodialWallet, findUser } from './wallets';
 import type { GiveawayCommand } from './tip-command';
@@ -19,12 +16,9 @@ import type { GiveawayCommand } from './tip-command';
  *
  * The interesting part is the ordering, which is what makes the draw verifiable:
  * a seed commitment is published when entries open, and the randomness beacon
- * that decides winners is a Solana blockhash from *after* entries close. See
+ * that decides winners is a Robinhood Chain block hash from *after* entries close. See
  * `draw.ts` for why neither party can steer the result alone.
  */
-
-/** Solana fits roughly this many transfers in one transaction. */
-const PAYOUTS_PER_TX = 8;
 
 /**
  * Announce a giveaway and start its entry window.
@@ -84,7 +78,7 @@ export async function openGiveaway(params: {
       creatorHandle,
       totalAmount: parsed.base.toString(),
       tokenSymbol: token.info.symbol,
-      tokenMint: token.info.mint,
+      tokenMint: token.info.address,
       tokenDecimals: token.info.decimals,
       winnerCount: command.winners,
       closesAt,
@@ -190,17 +184,16 @@ async function settleGiveaway(giveaway: IGiveaway): Promise<boolean> {
     return false;
   }
 
-  const keypair = Keypair.fromSecretKey(await decryptPrivateKey(creator.encryptedPrivateKey));
   const token = await resolveToken(giveaway.tokenMint ?? giveaway.tokenSymbol);
 
   // Resolve every winner to a wallet, creating one for those who never signed up.
-  const targets: Array<{ handle: string; address: PublicKey; amount: bigint }> = [];
+  const targets: Array<{ handle: string; address: string; amount: bigint }> = [];
   for (const [i, handle] of winners.entries()) {
     const { user } = await ensureCustodialWallet({ handle });
-    targets.push({ handle, address: new PublicKey(user.walletAddress), amount: shares[i]! });
+    targets.push({ handle, address: user.walletAddress, amount: shares[i]! });
   }
 
-  if (!(await creatorCanCover(keypair, token, targets))) {
+  if (!(await creatorCanCover(creator, token, targets))) {
     await voidOut(
       'insufficient balance at draw time',
       `${giveaway.creatorHandle} your tip wallet no longer covers the prize, so the giveaway could not pay out. The winners were still drawn and are recorded on the verification page.`
@@ -208,72 +201,58 @@ async function settleGiveaway(giveaway: IGiveaway): Promise<boolean> {
     return false;
   }
 
+  // One transaction per winner: EVM cannot batch transfers into a single
+  // instruction list the way Solana can, so a ten-winner draw is ten sends.
+  // Gas on this chain is fractions of a cent, so the cost is noise; the reason
+  // to care is that a partial failure leaves some winners paid and some not,
+  // which is recorded rather than retried blindly.
   const signatures: string[] = [];
-  for (let i = 0; i < targets.length; i += PAYOUTS_PER_TX) {
-    const batch = targets.slice(i, i + PAYOUTS_PER_TX);
-    const instructions = [];
+  for (const target of targets) {
+    const result = await settleTransfer({
+      sender: creator,
+      recipientAddress: target.address,
+      amount: target.amount,
+      token,
+    });
 
-    for (const target of batch) {
-      if (!token.mint) {
-        instructions.push(
-          ...buildSolPayouts(keypair.publicKey, [
-            { to: target.address, lamports: Number(target.amount) },
-          ])
-        );
-      } else {
-        const plan = buildSplTransfer({
-          from: keypair.publicKey,
-          to: target.address,
-          amount: target.amount,
-          resolved: token.mint,
-          needsAccount: await recipientNeedsAccount(target.address, token.mint),
-        });
-        instructions.push(...plan.instructions);
-      }
-    }
-
-    const outcome = await sendInstructions(keypair, instructions);
-    if (outcome.status === 'failed') {
-      giveaway.note = `payout batch ${i / PAYOUTS_PER_TX} failed: ${outcome.reason}`;
+    if (!result.ok || result.outcome.status === 'failed') {
+      giveaway.note = `payout to ${target.handle} failed: ${result.ok ? 'reverted' : result.message}`;
       await giveaway.save();
       break;
     }
-    signatures.push(outcome.signature);
+    signatures.push(result.outcome.hash);
 
-    // Record history for the batch that just landed.
-    for (const target of batch) {
-      const entry = {
-        amount: target.amount.toString(),
-        tokenSymbol: token.info.symbol,
-        tokenMint: token.info.mint,
-        tokenDecimals: token.info.decimals,
-        txHash: outcome.signature,
-        status: outcome.status,
-        date: new Date(),
-      };
-      const { user } = await ensureCustodialWallet({ handle: target.handle });
-      await User.updateOne(
-        { _id: user._id },
-        {
-          $push: {
-            history: { ...entry, type: 'tip', direction: 'in', counterparty: giveaway.creatorHandle },
-          },
-        }
-      );
-      await User.updateOne(
-        { _id: creator._id },
-        {
-          $push: {
-            history: { ...entry, type: 'transfer', direction: 'out', counterparty: target.handle },
-          },
-        }
-      );
-    }
+    const entry = {
+      amount: target.amount.toString(),
+      tokenSymbol: token.info.symbol,
+      tokenMint: token.info.address,
+      tokenDecimals: token.info.decimals,
+      txHash: result.outcome.hash,
+      status: result.outcome.status,
+      date: new Date(),
+    };
+    const { user } = await ensureCustodialWallet({ handle: target.handle });
+    await User.updateOne(
+      { _id: user._id },
+      {
+        $push: {
+          history: { ...entry, type: 'tip', direction: 'in', counterparty: giveaway.creatorHandle },
+        },
+      }
+    );
+    await User.updateOne(
+      { _id: creator._id },
+      {
+        $push: {
+          history: { ...entry, type: 'transfer', direction: 'out', counterparty: target.handle },
+        },
+      }
+    );
   }
 
   giveaway.winners = targets.map((t) => ({
     handle: t.handle,
-    walletAddress: t.address.toString(),
+    walletAddress: t.address,
     amount: t.amount.toString(),
   }));
   giveaway.payoutTxHashes = signatures;
@@ -305,20 +284,30 @@ async function settleGiveaway(giveaway: IGiveaway): Promise<boolean> {
   return true;
 }
 
-/** Does the creator still hold enough to pay everyone, including account rent? */
+/** Does the creator still hold enough to pay everyone? */
 async function creatorCanCover(
-  keypair: Keypair,
+  creator: IUser,
   token: ResolvedToken,
-  targets: Array<{ address: PublicKey; amount: bigint }>
+  targets: Array<{ address: string; amount: bigint }>
 ): Promise<boolean> {
   const total = targets.reduce((sum, t) => sum + t.amount, 0n);
+  const address = creator.walletAddress;
+  if (!address) return false;
 
-  if (!token.mint) {
-    const balance = await getConnection().getBalance(keypair.publicKey, 'confirmed');
-    return BigInt(spendableLamports(balance)) >= total;
+  if (token.info.address === null) {
+    // Native ETH pays both the prize and the gas for every payout.
+    const balance = await nativeBalance(address as `0x${string}`);
+    const gas = await estimateFeeWei(false);
+    return balance >= total + gas * BigInt(targets.length);
   }
 
-  const { tokenBalance } = await import('./spl');
-  const held = await tokenBalance(keypair.publicKey, token.mint);
-  return held >= total;
+  // A token prize still needs ETH for gas on every transfer, so both are checked
+  // — holding the prize but no gas is the state that would otherwise pay half
+  // the winners and strand the rest.
+  const [held, ethBalance, gas] = await Promise.all([
+    tokenBalance(token.info.address, address as `0x${string}`),
+    nativeBalance(address as `0x${string}`),
+    estimateFeeWei(true),
+  ]);
+  return held >= total && ethBalance >= gas * BigInt(targets.length);
 }

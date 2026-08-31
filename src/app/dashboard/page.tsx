@@ -9,7 +9,6 @@ import { CopyButton, truncateMiddle } from '@/components/ui/copy-button';
 import { exampleCommand } from '@/lib/tip-command';
 import { FundDialog } from './fund-dialog';
 import { WithdrawDialog } from './withdraw-dialog';
-import { SwapDialog } from './swap-dialog';
 import type { MeResponse, HistoryItem } from './types';
 
 type Tab = 'overview' | 'activity';
@@ -38,8 +37,6 @@ export default function DashboardPage() {
   const [tab, setTab] = useState<Tab>('overview');
   const [fundOpen, setFundOpen] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
-  const [swapOpen, setSwapOpen] = useState(false);
-
   // Bumped to ask the effect below for a fresh load.
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -86,11 +83,16 @@ export default function DashboardPage() {
   }, [api, toast]);
 
   const wallet = data?.wallet ?? null;
-  const balanceLabel = useMemo(() => {
-    if (!wallet) return null;
-    if (wallet.balanceError || wallet.balanceSol === null) return null;
-    return wallet.balanceSol.toFixed(4);
-  }, [wallet]);
+  const balances = wallet?.balances ?? null;
+
+  // The headline is whatever they hold most of that is not gas; ETH is shown
+  // separately because it is the thing that has to be there for anything to
+  // send, and running out of it is the state people actually get stuck in.
+  const headline = useMemo(
+    () => balances?.find((b) => !b.isGas) ?? balances?.[0] ?? null,
+    [balances]
+  );
+  const gas = useMemo(() => balances?.find((b) => b.isGas) ?? null, [balances]);
 
   if (!ready) return <FullScreenStatus message="Restoring your session…" />;
 
@@ -107,7 +109,7 @@ export default function DashboardPage() {
             >
               Pourboire
             </Link>
-            {data?.cluster && data.cluster !== 'mainnet-beta' && (
+            {data?.cluster && data.cluster !== 'mainnet' && (
               // A visible, permanent reminder. The old UI showed a green "Live"
               // badge regardless of which cluster it was pointed at.
               <span className="rounded-full bg-amber-500/20 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-amber-300">
@@ -173,13 +175,14 @@ export default function DashboardPage() {
             />
 
             <BalanceCard
-              balanceLabel={balanceLabel}
+              headline={headline}
+              gas={gas}
+              others={balances?.filter((b) => !b.isGas && b !== headline) ?? []}
               unavailable={Boolean(wallet?.balanceError)}
               onFund={() => setFundOpen(true)}
               onWithdraw={() => setWithdrawOpen(true)}
-              onSwap={() => setSwapOpen(true)}
               onRetry={() => refresh()}
-              canWithdraw={Boolean(balanceLabel && Number(balanceLabel) > 0)}
+              canWithdraw={Boolean(balances?.some((b) => BigInt(b.raw) > 0n))}
             />
 
             <nav
@@ -226,13 +229,10 @@ export default function DashboardPage() {
           onFunded={() => refresh()}
         />
       )}
-      {wallet?.address && swapOpen && (
-        <SwapDialog onClose={() => setSwapOpen(false)} onSwapped={() => refresh()} />
-      )}
       {wallet?.address && withdrawOpen && (
         <WithdrawDialog
           onClose={() => setWithdrawOpen(false)}
-          maxSol={wallet.balanceSol ?? 0}
+          balances={wallet.balances ?? []}
           onWithdrawn={() => refresh()}
         />
       )}
@@ -376,23 +376,35 @@ function ProfileCard({
   );
 }
 
+interface Balance {
+  symbol: string;
+  amount: string;
+  raw: string;
+  isGas: boolean;
+}
+
 function BalanceCard({
-  balanceLabel,
+  headline,
+  gas,
+  others,
   unavailable,
   onFund,
   onWithdraw,
-  onSwap,
   onRetry,
   canWithdraw,
 }: {
-  balanceLabel: string | null;
+  headline: Balance | null;
+  gas: Balance | null;
+  others: Balance[];
   unavailable: boolean;
   onFund: () => void;
   onWithdraw: () => void;
-  onSwap: () => void;
   onRetry: () => void;
   canWithdraw: boolean;
 }) {
+  // Gas is its own warning, not just another row: holding tokens with no ETH
+  // means nothing can be sent, and the balance alone does not say that.
+  const outOfGas = gas !== null && BigInt(gas.raw) === 0n;
   return (
     <section className="mt-6 rounded-2xl border border-white/10 bg-gradient-to-r from-purple-500/10 to-blue-500/10 p-5 backdrop-blur-sm sm:p-8">
       <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
@@ -414,9 +426,24 @@ function BalanceCard({
               </button>
             </div>
           ) : (
-            <p className="mt-2 text-4xl font-extralight tracking-tight tabular-nums">
-              {balanceLabel} <span className="text-2xl text-white/50">SOL</span>
-            </p>
+            <div className="mt-2">
+              <p className="text-4xl font-extralight tracking-tight tabular-nums">
+                {headline?.amount ?? '0 USDG'}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-light text-white/50">
+                {gas && <span className="tabular-nums">{gas.amount} for gas</span>}
+                {others.map((b) => (
+                  <span key={b.symbol} className="tabular-nums">
+                    {b.amount}
+                  </span>
+                ))}
+              </div>
+              {outOfGas && (
+                <p className="mt-2 text-xs font-light text-amber-300">
+                  No ETH for gas — add a little before sending anything.
+                </p>
+              )}
+            </div>
           )}
         </div>
 
@@ -427,13 +454,6 @@ function BalanceCard({
             className="flex-1 rounded-xl bg-blue-500 px-5 py-3 text-sm font-light tracking-tight transition hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 sm:flex-none"
           >
             Add funds
-          </button>
-          <button
-            type="button"
-            onClick={onSwap}
-            className="flex-1 rounded-xl border border-white/15 px-5 py-3 text-sm font-light tracking-tight transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 sm:flex-none"
-          >
-            Swap
           </button>
           <button
             type="button"
@@ -583,7 +603,7 @@ function Activity({ history, truncated }: { history: HistoryItem[]; truncated?: 
                     <time dateTime={new Date(tx.date).toISOString()}>{formatDate(tx.date)}</time>
                     <span aria-hidden>Â·</span>
                     <a
-                      href={tx.explorerUrl ?? `https://solscan.io/tx/${tx.txHash}`}
+                      href={tx.explorerUrl ?? `https://robinhoodchain.blockscout.com/tx/${tx.txHash}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="rounded font-mono text-blue-300 hover:text-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"

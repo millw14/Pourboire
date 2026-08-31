@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
   let qrDataUri: string | null = null;
   if (params.kind === 'wallet' && params.qr) {
     try {
-      const png = await QRCode.toBuffer(`solana:${params.qr}`, {
+      const png = await QRCode.toBuffer(`ethereum:${params.qr}@4663`, {
         type: 'png',
         margin: 1,
         width: 260,
@@ -172,7 +172,7 @@ function AmountBody({ params }: { params: ReceiptParams }) {
 /**
  * Wallet: whose it is, the address in full, and a scannable code.
  *
- * The address is split across two lines rather than shrunk to fit — a Solana
+ * The address is split across two lines rather than shrunk to fit — an
  * address someone might retype by hand has to stay legible.
  */
 function WalletBody({ params, qrDataUri }: { params: ReceiptParams; qrDataUri: string | null }) {
@@ -206,7 +206,7 @@ function WalletBody({ params, qrDataUri }: { params: ReceiptParams; qrDataUri: s
             color: 'rgba(255,255,255,0.5)',
           }}
         >
-          Send SOL or any SPL token to this address
+          Send USDG or any token on Robinhood Chain
         </div>
       </div>
 

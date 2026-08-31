@@ -9,21 +9,21 @@
 
 // Explicit extension: this module is imported directly by the Node test runner,
 // which does not resolve extensionless relative paths.
-import { TIPPABLE_SYMBOLS } from './tokens.ts';
+import { TIPPABLE_SYMBOLS, DEFAULT_TOKEN } from './tokens.ts';
 
 export const BOT_HANDLE = '@Pourboireonsol';
 
 export interface TipCommand {
   kind: 'tip';
   amount: string;
-  /** A known symbol (`SOL`, `BONK`) or a raw mint address. */
+  /** A known symbol (`USDG`, `NVDA`) or a raw contract address. */
   token: string;
   /**
    * Explicit recipient, when the command names one. Null means "the author of
    * the post this replies to" — the flow the homepage teaches.
    */
   recipientHandle: string | null;
-  /** `tip 1 SOL each @a @b @c` pays every handle; `split` divides one amount. */
+  /** `tip 1 USDG each @a @b @c` pays every handle; `split` divides one amount. */
   mode: 'single' | 'each' | 'split';
   /** Populated for multi-recipient commands. */
   recipients: string[];
@@ -92,8 +92,8 @@ export const RAIN_DEFAULT_RECIPIENTS = 10;
 
 const HANDLE = '[A-Za-z0-9_]{1,15}';
 const AMOUNT = '\\d[\\d,]*(?:\\.\\d+)?';
-/** Base58, 32-44 chars — a raw mint address. */
-const MINT = '[1-9A-HJ-NP-Za-km-z]{32,44}';
+/** A raw ERC-20 contract address. */
+const MINT = '0x[0-9a-fA-F]{40}';
 const TOKEN = `(?:${TIPPABLE_SYMBOLS.join('|')}|${MINT})`;
 
 /** Also matches the shorter `@Pourboire`, which the tutorial taught for months. */
@@ -117,7 +117,7 @@ function parseGiveaway(text: string): GiveawayCommand | null {
   if (!m) return null;
 
   const amount = strip(m[1]!);
-  const token = (m[2] ?? 'SOL').toUpperCase();
+  const token = (m[2] ?? DEFAULT_TOKEN.symbol).toUpperCase();
   const winners = Number(m[3]);
   const quantity = Number(m[4]);
   const unit = m[5]!.toLowerCase();
@@ -134,7 +134,7 @@ function parseGiveaway(text: string): GiveawayCommand | null {
   return {
     kind: 'giveaway',
     amount,
-    token: TIPPABLE_SYMBOLS.includes(token) ? token : m[2] ?? 'SOL',
+    token: TIPPABLE_SYMBOLS.includes(token) ? token : m[2] ?? DEFAULT_TOKEN.symbol,
     winners,
     durationMinutes,
   };
@@ -161,7 +161,7 @@ function parseMulti(text: string): TipCommand | null {
   return {
     kind: 'tip',
     amount: strip(m[2]!),
-    token: (m[3] ?? 'SOL').toUpperCase() === m[3]?.toUpperCase() ? (m[3] ?? 'SOL') : 'SOL',
+    token: m[3] ?? DEFAULT_TOKEN.symbol,
     recipientHandle: null,
     mode: explicitMode === 'split' ? 'split' : 'each',
     recipients: unique,
@@ -210,13 +210,13 @@ function parseSingle(text: string): TipCommand | null {
     return {
       kind: 'tip',
       amount,
-      // Symbols normalise to upper case; a raw mint address keeps its casing,
-      // because base58 is case-sensitive and upper-casing it breaks the address.
+      // Symbols normalise to upper case; a raw contract address keeps its
+      // casing, because EIP-55 checksums are encoded in it.
       token: rawToken
         ? TIPPABLE_SYMBOLS.includes(rawToken.toUpperCase())
           ? rawToken.toUpperCase()
           : rawToken
-        : 'SOL',
+          : DEFAULT_TOKEN.symbol,
       recipientHandle,
       mode: 'single',
       recipients: recipientHandle ? [recipientHandle] : [],
@@ -295,7 +295,7 @@ function parseRain(text: string): RainCommand | null {
       ? TIPPABLE_SYMBOLS.includes(rawToken.toUpperCase())
         ? rawToken.toUpperCase()
         : rawToken
-      : 'SOL',
+      : DEFAULT_TOKEN.symbol,
     maxRecipients: requested,
   };
 }
@@ -328,14 +328,14 @@ export function parseTipCommand(text: string): TipCommand | null {
 }
 
 /** The canonical examples shown in the UI, generated from the same rules. */
-export function exampleCommand(amount = 0.5): string {
-  return `${BOT_HANDLE} tip ${amount} SOL`;
+export function exampleCommand(amount = 5): string {
+  return `${BOT_HANDLE} tip ${amount} ${DEFAULT_TOKEN.symbol}`;
 }
 
-export function exampleRain(amount = 1): string {
-  return `${BOT_HANDLE} rain ${amount} SOL`;
+export function exampleRain(amount = 10): string {
+  return `${BOT_HANDLE} rain ${amount} ${DEFAULT_TOKEN.symbol}`;
 }
 
 export function exampleGiveaway(): string {
-  return `${BOT_HANDLE} giveaway 5 SOL to 10 in 2h`;
+  return `${BOT_HANDLE} giveaway 100 ${DEFAULT_TOKEN.symbol} to 10 in 2h`;
 }

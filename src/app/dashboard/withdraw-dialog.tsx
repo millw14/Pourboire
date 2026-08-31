@@ -1,12 +1,11 @@
 ﻿'use client';
 
 import { useMemo, useState } from 'react';
-import { PublicKey } from '@solana/web3.js';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useWallets } from '@privy-io/react-auth';
 import { Modal } from '@/components/ui/modal';
 import { useToast } from '@/components/ui/toast';
 import { useApi, ApiError } from '@/lib/use-api';
-import type { WithdrawResponse } from './types';
+import type { Balance, WithdrawResponse } from './types';
 
 /**
  * Withdraw from the custodial tip wallet.
@@ -16,50 +15,47 @@ import type { WithdrawResponse } from './types';
  * `console.log`. From the user's side the dialog just closed, or didn't.
  */
 
-/** Kept in step with FEE_RESERVE + RENT_EXEMPT_RESERVE in src/lib/solana.ts. */
-const RESERVE_SOL = (890_880 + 10_000) / 1_000_000_000;
 
 interface WithdrawDialogProps {
   onClose: () => void;
-  maxSol: number;
+  balances: Balance[];
   onWithdrawn: () => void;
 }
 
-export function WithdrawDialog({ onClose, maxSol, onWithdrawn }: WithdrawDialogProps) {
+export function WithdrawDialog({ onClose, balances, onWithdrawn }: WithdrawDialogProps) {
   const api = useApi();
   const { toast } = useToast();
-  const { publicKey, connected } = useWallet();
+  const { wallets } = useWallets();
+  const connectedWallet = wallets[0] ?? null;
 
+  const sendable = balances.filter((b) => BigInt(b.raw) > 0n);
+  const [symbol, setSymbol] = useState(sendable[0]?.symbol ?? 'USDG');
+  const selected = sendable.find((b) => b.symbol === symbol) ?? null;
   const [amount, setAmount] = useState('');
   const [address, setAddress] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [touched, setTouched] = useState({ amount: false, address: false });
 
-  const spendable = Math.max(0, maxSol - RESERVE_SOL);
+
 
   const amountError = useMemo(() => {
     if (!amount.trim()) return 'Enter an amount';
     const n = Number(amount);
     if (!Number.isFinite(n)) return 'That is not a number';
     if (n <= 0) return 'Amount must be greater than zero';
-    if (n > spendable) {
-      return `You can withdraw up to ${spendable.toFixed(6)} SOL — the rest covers fees and keeps the account open`;
-    }
     return null;
-  }, [amount, spendable]);
+  }, [amount]);
 
   const addressError = useMemo(() => {
-    if (!address.trim()) return 'Enter a destination address';
-    try {
-      const key = new PublicKey(address.trim());
-      if (!PublicKey.isOnCurve(key.toBytes())) return 'That is a program address, not a wallet';
-      return null;
-    } catch {
-      return 'That is not a valid Solana address';
+    const value = address.trim();
+    if (!value) return 'Enter a destination address';
+    if (!/^0x[0-9a-fA-F]{40}$/.test(value)) {
+      return 'That is not a valid Robinhood Chain address';
     }
+    return null;
   }, [address]);
 
-  const canSubmit = !amountError && !addressError && !submitting;
+  const canSubmit = !amountError && !addressError && !submitting && selected !== null;
 
   const submit = async () => {
     if (!canSubmit) {
@@ -70,7 +66,7 @@ export function WithdrawDialog({ onClose, maxSol, onWithdrawn }: WithdrawDialogP
     try {
       const res = await api<WithdrawResponse>('/api/wallet/withdraw', {
         method: 'POST',
-        body: JSON.stringify({ amount, toAddress: address.trim() }),
+        body: JSON.stringify({ amount, token: symbol, toAddress: address.trim() }),
       });
 
       if (res.status === 'unconfirmed') {
@@ -79,14 +75,14 @@ export function WithdrawDialog({ onClose, maxSol, onWithdrawn }: WithdrawDialogP
           title: 'Sent, awaiting confirmation',
           description:
             res.message ?? 'The network has not confirmed it yet. Do not send again — track it below.',
-          action: { label: 'View on Solscan', href: res.explorerUrl },
+          action: { label: 'View on explorer', href: res.explorerUrl },
         });
       } else {
         toast({
           tone: 'success',
-          title: `Sent ${res.amount} SOL`,
+          title: `Sent ${res.amount}`,
           description: `To ${address.trim()}`,
-          action: { label: 'View on Solscan', href: res.explorerUrl },
+          action: { label: 'View on explorer', href: res.explorerUrl },
         });
       }
 
@@ -108,8 +104,8 @@ export function WithdrawDialog({ onClose, maxSol, onWithdrawn }: WithdrawDialogP
       open
       onClose={onClose}
       busy={submitting}
-      title="Withdraw SOL"
-      description="Move SOL out of your tip wallet to any Solana address."
+      title="Withdraw"
+      description="Move funds out of your tip wallet to any Robinhood Chain address."
     >
       <form
         onSubmit={(e) => {
@@ -118,23 +114,50 @@ export function WithdrawDialog({ onClose, maxSol, onWithdrawn }: WithdrawDialogP
         }}
         className="space-y-4"
       >
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-light text-white/70">Token</span>
+          <select
+            value={symbol}
+            onChange={(e) => {
+              setSymbol(e.target.value);
+              setAmount('');
+            }}
+            disabled={submitting || sendable.length === 0}
+            className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm outline-none transition focus:border-white/30 focus-visible:ring-2 focus-visible:ring-white/40 disabled:opacity-50"
+          >
+            {sendable.length === 0 ? (
+              <option className="bg-neutral-900">Nothing to withdraw</option>
+            ) : (
+              sendable.map((b) => (
+                <option key={b.symbol} value={b.symbol} className="bg-neutral-900">
+                  {b.amount}
+                </option>
+              ))
+            )}
+          </select>
+        </label>
+
         <Field
           label="Amount"
-          suffix="SOL"
+          suffix={symbol}
           error={touched.amount ? amountError : null}
-          hint={`${spendable.toFixed(6)} SOL available`}
+          hint={selected ? `${selected.amount} available` : undefined}
           action={
-            spendable > 0 ? (
+            selected ? (
               <button
                 type="button"
                 onClick={() => {
-                  // A real max: the balance minus the fee and rent reserve, so
-                  // "everything" produces a transaction that can actually pay
-                  // for itself.
-                  setAmount(spendable.toFixed(6));
+                  // For a token, the whole balance is sendable — gas comes out of
+                  // ETH separately. For ETH itself the server keeps a reserve
+                  // back, so it refuses anything that would strand the account;
+                  // offering the raw balance here would just bounce.
+                  const [value] = selected.amount.split(' ');
+                  setAmount(selected.isGas ? '' : (value ?? '').replace(/,/g, ''));
                   setTouched((t) => ({ ...t, amount: true }));
                 }}
-                className="rounded text-xs font-light text-blue-300 hover:text-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                disabled={selected.isGas}
+                title={selected.isGas ? 'Leave some ETH behind to pay gas' : undefined}
+                className="rounded text-xs font-light text-blue-300 hover:text-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-40"
               >
                 Max
               </button>
@@ -157,11 +180,11 @@ export function WithdrawDialog({ onClose, maxSol, onWithdrawn }: WithdrawDialogP
           label="Destination address"
           error={touched.address ? addressError : null}
           action={
-            connected && publicKey ? (
+            connectedWallet ? (
               <button
                 type="button"
                 onClick={() => {
-                  setAddress(publicKey.toString());
+                  setAddress(connectedWallet.address);
                   setTouched((t) => ({ ...t, address: true }));
                 }}
                 disabled={submitting}
@@ -179,14 +202,14 @@ export function WithdrawDialog({ onClose, maxSol, onWithdrawn }: WithdrawDialogP
             disabled={submitting}
             spellCheck={false}
             autoComplete="off"
-            placeholder="Solana address"
+            placeholder="0x…"
             aria-invalid={touched.address && Boolean(addressError)}
             className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 font-mono text-sm outline-none transition focus:border-white/30 focus-visible:ring-2 focus-visible:ring-white/40 disabled:opacity-50"
           />
         </Field>
 
         <p className="rounded-lg bg-white/5 px-3 py-2 text-xs font-light leading-relaxed text-white/50">
-          Solana transfers cannot be reversed. Check the address before you send.
+          Transfers cannot be reversed. Check the address before you send.
         </p>
 
         <div className="flex gap-3 pt-1">

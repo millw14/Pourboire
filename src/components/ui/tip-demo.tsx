@@ -32,7 +32,7 @@ const STEPS = [
   },
   {
     label: 'Confirmation',
-    body: '@builder @you sent you 0.5 SOL. It is already in your tip wallet.',
+    body: '@builder @you sent you 5 USDG. It is already in your tip wallet.',
     author: '@Pourboireonsol',
     sent: true,
   },
@@ -165,7 +165,7 @@ export function TipDemo() {
           {/* The visual is decorative; the ordered list beside it carries the
               same content for anyone not seeing this. */}
           <span className="sr-only">
-            Example: replying {exampleCommand(0.5)} to a post sends the author half a SOL.
+            Example: replying {exampleCommand(5)} to a post sends the author five dollars.
           </span>
         </Reveal>
       </div>
