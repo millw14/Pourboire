@@ -20,6 +20,8 @@ export type TweetStatus =
   /** Submitted but never observed. MUST NOT be retried — it may still land. */
   | 'unconfirmed'
   /** Nothing was broadcast. Safe to release for another attempt. */
+  /** Some recipients paid, some not. Terminal: never auto-retried. */
+  | 'partial'
   | 'failed'
   /** Parsed but not payable yet (e.g. sender has no funded wallet). */
   | 'pending';
@@ -53,7 +55,7 @@ const ProcessedTweetSchema = new Schema<IProcessedTweet>(
     tweetId: { type: String, required: true, unique: true },
     status: {
       type: String,
-      enum: ['claimed', 'settled', 'unconfirmed', 'failed', 'pending'],
+      enum: ['claimed', 'settled', 'unconfirmed', 'partial', 'failed', 'pending'],
       default: 'claimed',
     },
     commandKind: { type: String, enum: ['tip', 'giveaway', 'info'] },

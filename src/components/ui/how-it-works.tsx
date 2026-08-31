@@ -89,7 +89,7 @@ export function HowItWorks() {
 const EXTRAS = [
   {
     title: 'Any token',
-    code: `${BOT_HANDLE} tip 100000 BONK`,
+    code: `${BOT_HANDLE} tip 1 NVDA`,
     body: 'USDG, ETH, or tokenised stocks like NVDA and SPY — or paste any contract address.',
   },
   {

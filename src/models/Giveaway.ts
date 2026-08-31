@@ -16,6 +16,8 @@ export type GiveawayStatus =
   /** Winners paid and verifiable. */
   | 'settled'
   /** Ended without a payout — no entries, or the creator could not fund it. */
+  /** Some winners paid, some not. Needs an operator, not a retry. */
+  | 'partial'
   | 'void';
 
 export interface IGiveawayWinner {
@@ -93,7 +95,7 @@ const GiveawaySchema = new Schema<IGiveaway>(
 
     status: {
       type: String,
-      enum: ['open', 'drawn', 'settled', 'void'],
+      enum: ['open', 'drawn', 'settled', 'partial', 'void'],
       default: 'open',
     },
     payoutTxHashes: { type: [String], default: [] },

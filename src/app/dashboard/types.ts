@@ -51,6 +51,8 @@ export interface MeResponse {
      */
     balances: Balance[] | null;
     balanceError: boolean;
+    /** Wallet predates the chain move: its balance is on Solana, not here. */
+    legacyWallet?: boolean;
   } | null;
   pending: PendingTip[];
   history: HistoryItem[];

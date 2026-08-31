@@ -207,6 +207,7 @@ async function settleGiveaway(giveaway: IGiveaway): Promise<boolean> {
   // to care is that a partial failure leaves some winners paid and some not,
   // which is recorded rather than retried blindly.
   const signatures: string[] = [];
+  const paidHandles: string[] = [];
   for (const target of targets) {
     const result = await settleTransfer({
       sender: creator,
@@ -215,12 +216,21 @@ async function settleGiveaway(giveaway: IGiveaway): Promise<boolean> {
       token,
     });
 
-    if (!result.ok || result.outcome.status === 'failed') {
-      giveaway.note = `payout to ${target.handle} failed: ${result.ok ? 'reverted' : result.message}`;
+    if (!result.ok || result.outcome.status === 'failed' || result.outcome.status === 'rejected') {
+      giveaway.note = `payout stopped at ${target.handle} (${paidHandles.length}/${targets.length} paid): ${result.ok ? 'reverted' : result.message}`;
       await giveaway.save();
       break;
     }
+    if (result.outcome.status === 'unknown') {
+      // A send may have gone out with no hash to prove it. Stop, and record it
+      // as needing a human — retrying would risk paying this winner twice.
+      giveaway.note = `payout to ${target.handle} indeterminate (${paidHandles.length}/${targets.length} paid): ${result.outcome.reason}`;
+      await giveaway.save();
+      break;
+    }
+
     signatures.push(result.outcome.hash);
+    paidHandles.push(target.handle);
 
     const entry = {
       amount: target.amount.toString(),
@@ -256,7 +266,13 @@ async function settleGiveaway(giveaway: IGiveaway): Promise<boolean> {
     amount: t.amount.toString(),
   }));
   giveaway.payoutTxHashes = signatures;
-  giveaway.status = signatures.length ? 'settled' : 'void';
+
+  // 'settled' means everyone drawn was paid. A run that stopped part-way is
+  // 'partial', not settled — the previous version marked any non-empty payout
+  // as settled and then announced the full winner list, publicly congratulating
+  // people who had received nothing.
+  const allPaid = paidHandles.length === targets.length;
+  giveaway.status = paidHandles.length === 0 ? 'void' : allPaid ? 'settled' : 'partial';
   // The seed is already stored; it becomes public via the verification page now
   // that the draw has happened.
   await giveaway.save();
@@ -274,9 +290,20 @@ async function settleGiveaway(giveaway: IGiveaway): Promise<boolean> {
     footer: `${baseUrl().replace(/^https?:\/\//, '')}/giveaway/${giveaway.tweetId}`,
   }).then((png) => (png ? uploadReceipt(png) : null));
 
-  const names = winners.slice(0, 10).join(' ');
+  // Announce only the people actually paid.
+  //
+  // The previous version announced `winners` — the full drawn list — even when
+  // the payout loop had stopped early, publicly telling people they had won
+  // money they never received. The drawn list stays on the verification page,
+  // which is where the unpaid tail belongs.
+  const names = paidHandles.slice(0, 10).join(' ');
+  const remainder = paidHandles.length > 10 ? ` +${paidHandles.length - 10} more` : '';
+  const shortfall = allPaid
+    ? ''
+    : `\n\n${targets.length - paidHandles.length} of ${targets.length} could not be paid and are being followed up.`;
+
   await postTweet(
-    `🎉 Winners: ${names}${winners.length > 10 ? ` +${winners.length - 10} more` : ''}\n\n${formatAmount(shares[0]!, token.info)} each, paid.\n\nThe seed and the on-chain beacon are published — verification address on the card.`,
+    `🎉 Winners: ${names}${remainder}\n\n${formatAmount(shares[0]!, token.info)} each, paid.${shortfall}\n\nThe seed and the on-chain beacon are published — verification address on the card.`,
     giveaway.tweetId,
     media
   );

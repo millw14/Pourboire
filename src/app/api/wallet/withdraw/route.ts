@@ -60,11 +60,30 @@ export async function POST(req: NextRequest) {
     if (!result.ok) {
       return fail(400, result.message, 'insufficient_funds');
     }
-    if (result.outcome.status === 'failed') {
+
+    const outcome = result.outcome;
+
+    // Nothing left the wallet, and we know that for certain. Safe to say "try
+    // again".
+    if (outcome.status === 'failed' || outcome.status === 'rejected') {
       return fail(502, 'The network rejected the transfer. Nothing was sent.', 'tx_failed');
     }
 
     const amount = formatAmount(parsed.base, token.info);
+
+    // `unknown` means the submission call itself failed in a way that does not
+    // distinguish "never sent" from "sent, response lost". There is no hash to
+    // record, but the money may be gone, so this must never read as a plain
+    // error the user is invited to retry.
+    if (outcome.status === 'unknown') {
+      console.error('[wallet/withdraw] indeterminate submission', outcome.reason);
+      return fail(
+        502,
+        'We lost contact with the network while sending. Check your balance before trying again — the transfer may still have gone through.',
+        'tx_indeterminate'
+      );
+    }
+
     user.history.push({
       type: 'transfer',
       direction: 'out',
@@ -73,20 +92,20 @@ export async function POST(req: NextRequest) {
       tokenMint: token.info.address,
       tokenDecimals: token.info.decimals,
       counterparty: destination,
-      txHash: result.outcome.hash,
-      status: result.outcome.status,
+      txHash: outcome.hash,
+      status: outcome.status,
       date: new Date(),
     });
     await user.save();
 
-    if (result.outcome.status === 'unconfirmed') {
+    if (outcome.status === 'unconfirmed') {
       // Broadcast but not yet seen in a block. Reporting failure here is what
       // made callers retry and send twice, so this is deliberately a success
       // shape with an honest status.
       return ok({
         status: 'unconfirmed',
-        txHash: result.outcome.hash,
-        explorerUrl: explorerTxUrl(result.outcome.hash),
+        txHash: outcome.hash,
+        explorerUrl: explorerTxUrl(outcome.hash),
         message:
           'Sent, but not confirmed yet. Track it on the explorer — do not send again.',
       });
@@ -94,8 +113,8 @@ export async function POST(req: NextRequest) {
 
     return ok({
       status: 'confirmed',
-      txHash: result.outcome.hash,
-      explorerUrl: explorerTxUrl(result.outcome.hash),
+      txHash: outcome.hash,
+      explorerUrl: explorerTxUrl(outcome.hash),
       amount,
       to: destination,
     });

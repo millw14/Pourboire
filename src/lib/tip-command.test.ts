@@ -5,7 +5,11 @@ import {
   parseTipCommand,
   exampleCommand,
   exampleGiveaway,
+  exampleRain,
+  BOT_HANDLE,
   RAIN_DEFAULT_RECIPIENTS,
+  RETIRED_SYMBOLS,
+  retiredSymbolIn,
 } from './tip-command.ts';
 
 /**
@@ -72,12 +76,45 @@ test('rejects a zero amount', () => {
   assert.equal(parseCommand('@Pourboireonsol tip 0 USDG @alice'), null);
 });
 
-test('does not swallow a trailing word into the amount', () => {
-  // "ethereal" starts with "eth" — the negative lookahead must stop the
-  // no-recipient pattern claiming it as a token and charging the wrong one.
-  const c = parseTipCommand('@Pourboireonsol tip 0.5 ethereal');
+test('an unrecognised word in the token position refuses the whole command', () => {
+  // This is the fix for the worst bug the migration introduced. When SOL/BONK
+  // stopped being known symbols they stopped matching the token pattern, the
+  // command fell through to the bare "amount only" form, and `tip 100000 BONK`
+  // was read as 100,000 USDG with the recipient discarded.
+  //
+  // Anything token-shaped that we do not recognise now refuses the command
+  // outright. Refusing costs one no-op reply; accepting cost the balance.
+  assert.equal(parseCommand('@Pourboireonsol tip 100000 BONK'), null);
+  assert.equal(parseCommand('@Pourboireonsol tip 0.5 SOL @alice'), null);
+  assert.equal(parseCommand('@Pourboireonsol tip 5 FOOBAR @alice'), null);
+  assert.equal(parseCommand('@Pourboireonsol tip 0.5 ethereal'), null);
+
+  // The same rule across every command shape that takes a token.
+  assert.equal(parseCommand('@Pourboireonsol split 3 SOL @a @b'), null);
+  assert.equal(parseCommand('@Pourboireonsol rain 5 SOL'), null);
+  assert.equal(parseCommand('@Pourboireonsol giveaway 5 SOL to 10 in 2h'), null);
+});
+
+test('a bare amount with no token still defaults to USDG', () => {
+  // The default applies only when no token word was written at all — never as a
+  // substitute for one we failed to recognise.
+  const c = parseTipCommand('@Pourboireonsol tip 0.5');
   assert.equal(c?.token, 'USDG');
   assert.equal(c?.amount, '0.5');
+});
+
+test('every symbol retired by the chain move is detectable for the reply', () => {
+  // So the bot can explain itself rather than going silent on people who
+  // learned the old syntax.
+  for (const symbol of RETIRED_SYMBOLS) {
+    assert.equal(
+      retiredSymbolIn(`@Pourboireonsol tip 5 ${symbol} @alice`),
+      symbol,
+      `${symbol} should be recognised as retired`
+    );
+  }
+  assert.equal(retiredSymbolIn('@Pourboireonsol tip 5 USDG @alice'), null);
+  assert.equal(retiredSymbolIn('just a tweet mentioning SOL'), null);
 });
 
 /* ----------------------------------------------------------- token support */
@@ -259,4 +296,30 @@ test('rain is not read as a giveaway or a tip', () => {
 test('rain rejects a zero or absent amount', () => {
   assert.equal(parseCommand('@Pourboireonsol rain 0 USDG'), null);
   assert.equal(parseCommand('@Pourboireonsol rain'), null);
+});
+
+test('every command the UI teaches actually parses', () => {
+  // The chain migration broke this once: the homepage still advertised
+  // `tip 100000 BONK` after BONK stopped being a known symbol, so the single
+  // most prominent example on the site was a command the bot would refuse.
+  // Generated forms and hand-written copy are both checked here.
+  const taught = [
+    exampleCommand(5),
+    exampleRain(10),
+    exampleGiveaway(),
+    `${BOT_HANDLE} tip 1 NVDA`,
+    `${BOT_HANDLE} split 30 USDG @a @b @c`,
+    `${BOT_HANDLE} match`,
+    `${BOT_HANDLE} wallet @alice`,
+    // The six lines on the bot's own help card.
+    `${BOT_HANDLE} tip 0.5 USDG`,
+    `${BOT_HANDLE} tip 0.5 USDG @alice`,
+    `${BOT_HANDLE} split 3 USDG @a @b @c`,
+    `${BOT_HANDLE} rain 5 USDG`,
+    `${BOT_HANDLE} giveaway 5 USDG to 10 in 2h`,
+  ];
+
+  for (const command of taught) {
+    assert.notEqual(parseCommand(command), null, `taught but unparseable: ${command}`);
+  }
 });

@@ -85,13 +85,14 @@ export default function DashboardPage() {
   const wallet = data?.wallet ?? null;
   const balances = wallet?.balances ?? null;
 
-  // The headline is whatever they hold most of that is not gas; ETH is shown
-  // separately because it is the thing that has to be there for anything to
-  // send, and running out of it is the state people actually get stuck in.
-  const headline = useMemo(
-    () => balances?.find((b) => !b.isGas) ?? balances?.[0] ?? null,
-    [balances]
-  );
+  // The headline is a non-gas holding. ETH is shown separately because it is
+  // what has to be there for anything to send, and running out of it is the
+  // state people actually get stuck in.
+  //
+  // Deliberately no fallback to balances[0]: that is the ETH row, and using it
+  // rendered the same figure twice — once as the headline and once as "for gas"
+  // — for anyone holding only ETH.
+  const headline = useMemo(() => balances?.find((b) => !b.isGas) ?? null, [balances]);
   const gas = useMemo(() => balances?.find((b) => b.isGas) ?? null, [balances]);
 
   if (!ready) return <FullScreenStatus message="Restoring your session…" />;
@@ -428,6 +429,9 @@ function BalanceCard({
           ) : (
             <div className="mt-2">
               <p className="text-4xl font-extralight tracking-tight tabular-nums">
+                {/* `0 USDG` is a claim, not a placeholder. It is only shown when
+                    the balance list actually arrived and was empty — never when
+                    the lookup failed or the wallet predates the chain move. */}
                 {headline?.amount ?? '0 USDG'}
               </p>
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-light text-white/50">

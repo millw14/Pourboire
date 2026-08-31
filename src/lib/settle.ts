@@ -121,6 +121,20 @@ export async function settleTransfer(params: {
   }
 
   const keyBytes = await decryptPrivateKey(sender.encryptedPrivateKey);
+
+  // Wallets created before the chain move hold a 64-byte ed25519 Solana key and
+  // a base58 address. Neither works here, and feeding one to viem produces an
+  // opaque crash rather than an explanation. Detect it and say what happened —
+  // those balances are still on Solana and need sweeping, which is an operator
+  // job, not something a retry will fix.
+  if (keyBytes.length !== 32 || !isAddress(sender.walletAddress)) {
+    return {
+      ok: false,
+      message:
+        'this tip wallet was created on Solana and has not been migrated yet — its balance is still on the old chain',
+    };
+  }
+
   const privateKey = `0x${Buffer.from(keyBytes).toString('hex')}` as Hex;
   const from = sender.walletAddress as Address;
 

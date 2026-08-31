@@ -99,6 +99,30 @@ const TOKEN = `(?:${TIPPABLE_SYMBOLS.join('|')}|${MINT})`;
 /** Also matches the shorter `@Pourboire`, which the tutorial taught for months. */
 const BOT = '@pourboire(?:onsol)?';
 
+/**
+ * Any word sitting where a token symbol would go.
+ *
+ * This exists because of a real near-miss in this migration. When the registry
+ * moved from Solana to Robinhood Chain, SOL/USDC/BONK and friends stopped
+ * matching TOKEN — so `tip 100000 BONK` no longer matched the
+ * "amount, token, recipient" pattern and fell through to the bare
+ * "amount only" one, which read it as **100,000 USDG** and discarded any named
+ * recipient. A retired symbol silently became a six-figure stablecoin transfer.
+ *
+ * The rule now: if anything token-shaped follows the amount and we do not
+ * recognise it, the command does not parse at all. Failing closed costs a no-op
+ * and one reply; failing open costs the sender's balance.
+ */
+const TOKEN_SHAPED = '[A-Za-z][A-Za-z0-9]{1,9}';
+
+/** Symbols retired by the move off Solana, so the reply can say what happened. */
+export const RETIRED_SYMBOLS = ['SOL', 'USDC', 'USDT', 'BONK', 'JUP', 'WIF', 'JTO', 'PYTH'];
+
+function isKnownToken(word: string): boolean {
+  if (TIPPABLE_SYMBOLS.includes(word.toUpperCase())) return true;
+  return new RegExp('^' + MINT + '$').test(word);
+}
+
 const strip = (value: string) => value.replace(/,/g, '');
 const normalise = (handle: string) => `@${handle.replace(/^@/, '').toLowerCase()}`;
 const isBot = (handle: string) => /^@pourboire(onsol)?$/i.test(handle);
@@ -108,13 +132,15 @@ const isBot = (handle: string) => /^@pourboire(onsol)?$/i.test(handle);
  * `@Pourboireonsol giveaway 5 SOL to 10 people in 30m`
  */
 const GIVEAWAY_RE = new RegExp(
-  `${BOT}\\s+giveaway\\s+(${AMOUNT})\\s*(${TOKEN})?\\s+(?:to\\s+)?(\\d{1,3})\\s*(?:people|winners?)?\\s+(?:in|over)\\s+(\\d{1,4})\\s*(m|min|mins|minutes|h|hr|hrs|hours|d|days?)\\b`,
+  `${BOT}\\s+giveaway\\s+(${AMOUNT})\\s*(${TOKEN}|${TOKEN_SHAPED})?\\s+(?:to\\s+)?(\\d{1,3})\\s*(?:people|winners?)?\\s+(?:in|over)\\s+(\\d{1,4})\\s*(m|min|mins|minutes|h|hr|hrs|hours|d|days?)\\b`,
   'i'
 );
 
 function parseGiveaway(text: string): GiveawayCommand | null {
   const m = text.match(GIVEAWAY_RE);
   if (!m) return null;
+
+  if (m[2] && !isKnownToken(m[2])) return null;
 
   const amount = strip(m[1]!);
   const token = (m[2] ?? DEFAULT_TOKEN.symbol).toUpperCase();
@@ -142,7 +168,7 @@ function parseGiveaway(text: string): GiveawayCommand | null {
 
 /** `@Pourboireonsol tip 1 SOL each @a @b` / `... split 3 SOL @a @b @c` */
 const MULTI_RE = new RegExp(
-  `${BOT}\\s+(?:tip\\s+)?(each|split)?\\s*(${AMOUNT})\\s*(${TOKEN})?\\s+(each\\s+)?((?:@${HANDLE}[\\s,]*){2,})`,
+  `${BOT}\\s+(?:tip\\s+)?(each|split)?\\s*(${AMOUNT})\\s*(${TOKEN}|${TOKEN_SHAPED})?\\s+(each\\s+)?((?:@${HANDLE}[\\s,]*){2,})`,
   'i'
 );
 
@@ -157,6 +183,7 @@ function parseMulti(text: string): TipCommand | null {
 
   const unique = [...new Set(recipients)];
   if (unique.length < 2) return null;
+  if (m[3] && !isKnownToken(m[3])) return null;
 
   return {
     kind: 'tip',
@@ -171,21 +198,21 @@ function parseMulti(text: string): TipCommand | null {
 const SINGLE_PATTERNS: Array<{ re: RegExp; amount: number; token: number; recipient: number }> = [
   // amount, optional token, then recipient
   {
-    re: new RegExp(`${BOT}\\s+tip\\s+(${AMOUNT})\\s*(${TOKEN})?\\s+@(${HANDLE})`, 'i'),
+    re: new RegExp(`${BOT}\\s+tip\\s+(${AMOUNT})\\s*(${TOKEN}|${TOKEN_SHAPED})?\\s+@(${HANDLE})`, 'i'),
     amount: 1,
     token: 2,
     recipient: 3,
   },
   // recipient, then amount and optional token
   {
-    re: new RegExp(`${BOT}\\s+tip\\s+@(${HANDLE})\\s+(${AMOUNT})\\s*(${TOKEN})?`, 'i'),
+    re: new RegExp(`${BOT}\\s+tip\\s+@(${HANDLE})\\s+(${AMOUNT})\\s*(${TOKEN}|${TOKEN_SHAPED})?`, 'i'),
     amount: 2,
     token: 3,
     recipient: 1,
   },
   // amount and optional token, no recipient — the reply-target form
   {
-    re: new RegExp(`${BOT}\\s+tip\\s+(${AMOUNT})\\s*(${TOKEN})?(?![\\w.])`, 'i'),
+    re: new RegExp(`${BOT}\\s+tip\\s+(${AMOUNT})\\s*(${TOKEN}|${TOKEN_SHAPED})?(?![\\w.])`, 'i'),
     amount: 1,
     token: 2,
     recipient: -1,
@@ -201,6 +228,10 @@ function parseSingle(text: string): TipCommand | null {
     if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) continue;
 
     const rawToken = pattern.token > 0 ? m[pattern.token] : undefined;
+    // A word we do not recognise is a refusal, not a default. See TOKEN_SHAPED:
+    // silently substituting the default currency here once turned `tip 100000
+    // BONK` into a 100,000 USDG transfer.
+    if (rawToken && !isKnownToken(rawToken)) return null;
     const rawRecipient = pattern.recipient > 0 ? m[pattern.recipient] : undefined;
     const recipientHandle = rawRecipient ? normalise(rawRecipient) : null;
 
@@ -273,13 +304,15 @@ function parseInfo(text: string): InfoCommand | null {
  * `@Pourboireonsol rain 5 SOL to 20 people`
  */
 const RAIN_RE = new RegExp(
-  `${BOT}\\s+rain\\s+(${AMOUNT})\\s*(${TOKEN})?(?:\\s+(?:to|on|between|among)\\s+(\\d{1,3})\\s*(?:people|repliers?|replies)?)?`,
+  `${BOT}\\s+rain\\s+(${AMOUNT})\\s*(${TOKEN}|${TOKEN_SHAPED})?(?:\\s+(?:to|on|between|among)\\s+(\\d{1,3})\\s*(?:people|repliers?|replies)?)?`,
   'i'
 );
 
 function parseRain(text: string): RainCommand | null {
   const m = text.match(RAIN_RE);
   if (!m) return null;
+
+  if (m[2] && !isKnownToken(m[2])) return null;
 
   const amount = strip(m[1]!);
   if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) return null;
@@ -305,6 +338,21 @@ const MATCH_RE = new RegExp(`${BOT}\\s+match\\b`, 'i');
 
 function parseMatch(text: string): MatchCommand | null {
   return MATCH_RE.test(text) ? { kind: 'match' } : null;
+}
+
+/**
+ * A token this bot used to accept, named in a command that no longer parses.
+ *
+ * Worth detecting separately so the bot can explain itself. Everyone who used it
+ * before the chain move learned to type `SOL`, and silence would read as the bot
+ * being broken rather than the command being retired.
+ */
+export function retiredSymbolIn(text: string): string | null {
+  if (!new RegExp(BOT, 'i').test(text)) return null;
+  for (const symbol of RETIRED_SYMBOLS) {
+    if (new RegExp(`\\b${symbol}\\b`, 'i').test(text)) return symbol;
+  }
+  return null;
 }
 
 export function parseCommand(text: string): Command | null {

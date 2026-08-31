@@ -61,8 +61,14 @@ export async function GET(req: NextRequest) {
     let balances: Array<{ symbol: string; amount: string; raw: string; isGas: boolean }> | null =
       null;
     let balanceError = false;
+    // A wallet created before the chain move has a base58 Solana address. There
+    // is nothing to read here, and reporting zero would tell the owner their
+    // funds are gone when they are simply on the other chain.
+    const legacyWallet = Boolean(user.walletAddress) && !isAddress(user.walletAddress);
+
     if (user.walletAddress && isAddress(user.walletAddress)) {
       try {
+        // Narrowed by isAddress above, which is also what `legacyWallet` negates.
         const address = user.walletAddress;
         const [eth, ...tokens] = await Promise.all([
           nativeBalance(address),
@@ -127,7 +133,8 @@ export async function GET(req: NextRequest) {
       wallet: {
         address: user.walletAddress,
         balances,
-        balanceError,
+        balanceError: balanceError || legacyWallet,
+        legacyWallet,
       },
       pending,
       history,

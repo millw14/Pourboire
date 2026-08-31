@@ -11,6 +11,7 @@ import {
 } from '@/lib/twitter';
 import {
   parseCommand,
+  retiredSymbolIn,
   BOT_HANDLE,
   type TipCommand,
   type GiveawayCommand,
@@ -129,9 +130,37 @@ type MentionOutcome = 'settled' | 'deferred' | 'skipped' | 'giveaway';
 
 async function handleMention(tweet: Mention): Promise<MentionOutcome> {
   const command = parseCommand(tweet.text ?? '');
-  if (!command) return 'skipped';
-
   const senderHandle = tweet.author?.username ? `@${tweet.author.username.toLowerCase()}` : null;
+
+  if (!command) {
+    // A command naming a token from before the chain move parses to nothing, by
+    // design — the alternative was reading `tip 100000 BONK` as 100,000 USDG.
+    // Say so once, rather than leaving the bot looking broken to everyone who
+    // learned the old syntax.
+    const retired = retiredSymbolIn(tweet.text ?? '');
+    if (retired && senderHandle) {
+      try {
+        await ProcessedTweet.create({
+          tweetId: String(tweet.id),
+          status: 'settled',
+          commandKind: 'info',
+          senderHandle,
+          note: `retired symbol ${retired}`,
+        });
+      } catch (e) {
+        // Already answered by another run.
+        if ((e as { code?: number })?.code === 11000) return 'skipped';
+        throw e;
+      }
+      await postTweet(
+        `${senderHandle} ${retired} isn't supported here any more — tips run on Robinhood Chain now. Try USDG, ETH, or a ticker like NVDA.`,
+        String(tweet.id)
+      );
+      return 'skipped';
+    }
+    return 'skipped';
+  }
+
   if (!senderHandle) return 'skipped';
 
   // ---- Claim the tweet. First writer wins; everyone else skips. ----
@@ -428,6 +457,7 @@ async function settleTip(
 
   const paid: Array<{ handle: string; signature: string }> = [];
   let lastFailure = '';
+  let indeterminate = false;
 
   for (const handle of recipients) {
     const { user: recipient } = await ensureCustodialWallet({ handle });
@@ -443,8 +473,20 @@ async function settleTip(
       lastFailure = result.message;
       break;
     }
-    if (result.outcome.status === 'failed') {
+
+    const outcome = result.outcome;
+
+    if (outcome.status === 'failed' || outcome.status === 'rejected') {
       lastFailure = 'the network rejected the transfer';
+      break;
+    }
+
+    // Submission itself failed in a way that cannot tell "never sent" from
+    // "sent, response lost". Stop the loop and mark the whole tip indeterminate:
+    // there is no hash to record and it must never be retried automatically.
+    if (outcome.status === 'unknown') {
+      lastFailure = 'we lost contact with the network mid-send';
+      indeterminate = true;
       break;
     }
 
@@ -453,8 +495,8 @@ async function settleTip(
       tokenSymbol: token.info.symbol,
       tokenMint: token.info.address,
       tokenDecimals: token.info.decimals,
-      txHash: result.outcome.hash,
-      status: result.outcome.status,
+      txHash: outcome.hash,
+      status: outcome.status,
       date: new Date(),
     };
 
@@ -472,21 +514,51 @@ async function settleTip(
       }
     );
 
-    paid.push({ handle, signature: result.outcome.hash });
+    paid.push({ handle, signature: outcome.hash });
   }
 
   if (paid.length === 0) {
-    await mark('pending', { note: lastFailure || 'transfer failed' });
-    await recordPendingClaims(recipients, tweetId, senderHandle, perRecipient, token);
+    // `indeterminate` means a send may have gone out with no hash to show for
+    // it. Retrying that would be the double-send this ledger exists to prevent,
+    // so it is parked for an operator rather than queued.
+    await mark(indeterminate ? 'unconfirmed' : 'pending', {
+      note: lastFailure || 'transfer failed',
+    });
+    if (!indeterminate) {
+      await recordPendingClaims(recipients, tweetId, senderHandle, perRecipient, token);
+    }
     await notify(`${senderHandle} ${lastFailure || "that tip didn't go through"}. Nothing was sent.`);
     return 'deferred';
   }
 
   const partial = paid.length < recipients.length;
-  await mark(partial ? 'pending' : 'settled', {
+
+  // A partially-paid tip is terminal, not pending.
+  //
+  // `pending` is the retry queue, and retryPending rebuilds a row as a *single*
+  // tip to `recipientHandle` for the row's `amount` — which is the original
+  // total. A half-finished `split 30 USDG @a @b @c` would therefore come back as
+  // "send @a 30 USDG", paying the one person who already got their share the
+  // whole prize again, every run, for a week. So partial rows get their own
+  // status that retryPending does not select, and never carry a recipientHandle.
+  await mark(partial ? 'partial' : 'settled', {
     txHash: paid[0]!.signature,
-    note: partial ? `paid ${paid.length}/${recipients.length}: ${lastFailure}` : undefined,
+    note: partial
+      ? `paid ${paid.length}/${recipients.length} (${paid.map((p) => p.handle).join(' ')}): ${lastFailure}`
+      : undefined,
   });
+
+  if (partial) {
+    // The unpaid tail still gets a claim recorded, so those people can see the
+    // intent even though this row will not be retried automatically.
+    await recordPendingClaims(
+      recipients.filter((h) => !paid.some((p) => p.handle === h)),
+      tweetId,
+      senderHandle,
+      perRecipient,
+      token
+    );
+  }
 
   // The receipt card. A failure to render it costs the picture, not the reply.
   //
@@ -513,8 +585,13 @@ async function settleTip(
 
   // Recorded so `match` can resolve from either the original command or the
   // bot's own confirmation — people reply to whichever is in front of them.
-  await mark(partial ? 'pending' : 'settled', {
-    recipientHandle: paid[0]!.handle,
+  //
+  // `recipientHandle` is written only for a fully-settled single tip. On a
+  // partial it would name someone already paid, and on a split it would pair one
+  // handle with the row's *total* amount — the shape `match` and `retryPending`
+  // both read back, and both would then re-send the whole total to that person.
+  await mark(partial ? 'partial' : 'settled', {
+    ...(!partial && command.mode === 'single' ? { recipientHandle: paid[0]!.handle } : {}),
     ...(replyTweetId ? { replyTweetId } : {}),
   });
 

@@ -75,8 +75,8 @@ function Card({ params, qrDataUri }: { params: ReceiptParams; qrDataUri: string 
         justifyContent: 'space-between',
         padding: 64,
         background: '#050505',
-        // A wash of the token's colour, so a BONK tip reads differently from a
-        // USDC one at a glance while scrolling.
+        // A wash of the token's colour, so an NVDA tip reads differently from a
+        // USDG one at a glance while scrolling.
         backgroundImage: `radial-gradient(900px 500px at 15% 0%, ${params.color}26 0%, transparent 60%), radial-gradient(700px 500px at 100% 100%, ${params.color}1a 0%, transparent 55%)`,
         color: '#ffffff',
         fontFamily: 'sans-serif',
