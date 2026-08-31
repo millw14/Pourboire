@@ -4,8 +4,8 @@ import { notFound } from 'next/navigation';
 import connectDB from '@/lib/mongodb';
 import Giveaway from '@/models/Giveaway';
 import { commitmentFor, drawWinners, verifyCommitment } from '@/lib/draw';
-import { formatAmount, findTokenBySymbol } from '@/lib/tokens';
-import { explorerTxUrl } from '@/lib/solana';
+import { formatAmount, tokenFromRecord } from '@/lib/tokens';
+import { explorerTxUrl } from '@/lib/chain';
 import Footer from '@/components/ui/footer';
 
 /**
@@ -39,13 +39,7 @@ export default async function GiveawayPage({ params }: Props) {
   const giveaway = await Giveaway.findOne({ tweetId: id }).lean();
   if (!giveaway) notFound();
 
-  const token = findTokenBySymbol(giveaway.tokenSymbol) ?? {
-    symbol: giveaway.tokenSymbol,
-    name: giveaway.tokenSymbol,
-    mint: giveaway.tokenMint,
-    decimals: giveaway.tokenDecimals,
-    color: '#8B8B8B',
-  };
+  const token = tokenFromRecord(giveaway);
 
   const drawn = giveaway.status === 'settled' || giveaway.status === 'drawn';
   const total = formatAmount(BigInt(giveaway.totalAmount), token);
@@ -129,7 +123,7 @@ export default async function GiveawayPage({ params }: Props) {
             </li>
             <li>
               <strong className="font-medium text-white">2. Beacon.</strong> After entries closed,
-              the blockhash of a finalised Solana slot was taken. That value did not exist when the
+              the hash of a settled Robinhood Chain block was taken. That value did not exist when the
               seed was committed, so the seed could not have been chosen to favour anyone.
             </li>
             <li>

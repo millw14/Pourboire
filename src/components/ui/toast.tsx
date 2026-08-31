@@ -27,7 +27,7 @@ export interface Toast {
   tone: ToastTone;
   title: string;
   description?: string;
-  /** Optional link rendered as an action, e.g. a Solscan transaction. */
+  /** Optional link rendered as an action, e.g. a block explorer transaction. */
   action?: { label: string; href: string };
   /** Milliseconds before auto-dismiss. `null` keeps it until dismissed. */
   duration: number | null;
@@ -137,7 +137,7 @@ function ToastCard({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number)
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium leading-snug">{toast.title}</p>
           {toast.description && (
-            // `break-words` matters: these carry Solana addresses and signatures,
+            // `break-words` matters: these carry addresses and transaction hashes,
             // which are single 88-character tokens that otherwise blow out the card.
             <p className="mt-1 break-words text-xs font-light leading-relaxed text-white/70">
               {toast.description}

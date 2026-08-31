@@ -11,7 +11,7 @@
  * nothing ever replaces it.**
  */
 
-import { Keypair } from '@solana/web3.js';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import User, { type IUser } from '@/models/User';
 import { encryptPrivateKey } from './crypto';
 import { normalizeHandle } from './auth';
@@ -87,9 +87,10 @@ export async function ensureCustodialWallet(params: {
     return { user: existing, created: false };
   }
 
-  const keypair = Keypair.generate();
-  const encrypted = await encryptPrivateKey(keypair.secretKey);
-  const walletAddress = keypair.publicKey.toString();
+  // A 32-byte secp256k1 key, stored as the 0x-prefixed hex viem expects back.
+  const privateKey = generatePrivateKey();
+  const encrypted = await encryptPrivateKey(Buffer.from(privateKey.slice(2), 'hex'));
+  const walletAddress = privateKeyToAccount(privateKey).address;
   const twitterId = params.twitterId ?? placeholderTwitterId(handle);
 
   if (existing) {

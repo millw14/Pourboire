@@ -3,7 +3,7 @@
 export interface HistoryItem {
   type: 'tip' | 'transfer';
   direction: 'in' | 'out';
-  /** Pre-formatted by the server, e.g. "1.5 SOL" — the client never does decimal maths. */
+  /** Pre-formatted by the server, e.g. "1.5 USDG" — the client never does decimal maths. */
   amount: string;
   rawAmount: string;
   token: string;
@@ -23,10 +23,20 @@ export interface PendingTip {
   createdAt: string;
 }
 
+export interface Balance {
+  symbol: string;
+  /** Pre-formatted by the server, e.g. "12.5 USDG". */
+  amount: string;
+  /** Base units, for comparisons the client should not do in floating point. */
+  raw: string;
+  /** True for the native token, which pays gas rather than being tipped. */
+  isGas: boolean;
+}
+
 export interface MeResponse {
   success: true;
   needsTwitter: boolean;
-  cluster: 'mainnet-beta' | 'devnet' | 'testnet';
+  cluster: 'mainnet' | 'testnet';
   user: {
     handle: string;
     name: string;
@@ -35,9 +45,14 @@ export interface MeResponse {
   } | null;
   wallet: {
     address: string;
-    /** `null` when the RPC lookup failed — distinct from a genuine zero balance. */
-    balanceSol: number | null;
+    /**
+     * Null when the RPC lookup failed — distinct from a genuinely empty wallet,
+     * which is an empty array.
+     */
+    balances: Balance[] | null;
     balanceError: boolean;
+    /** Wallet predates the chain move: its balance is on Solana, not here. */
+    legacyWallet?: boolean;
   } | null;
   pending: PendingTip[];
   history: HistoryItem[];

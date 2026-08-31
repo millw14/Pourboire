@@ -1,28 +1,27 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import dynamic from 'next/dynamic';
-import { Connection, LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
-import { useWallet } from '@solana/wallet-adapter-react';
+import { useWallets, useSendTransaction } from '@privy-io/react-auth';
+import { encodeFunctionData, parseAbi } from 'viem';
 import { Modal } from '@/components/ui/modal';
 import { CopyButton } from '@/components/ui/copy-button';
 import { QrCode } from '@/components/ui/qr-code';
 import { useToast } from '@/components/ui/toast';
-import { rpcUrl, cluster } from '@/lib/env';
+import { KNOWN_TOKENS, DEFAULT_TOKEN, toBaseUnits, isNative } from '@/lib/tokens';
 
 /**
- * Add SOL to the custodial tip wallet.
+ * Add funds to the custodial tip wallet.
  *
- * Two ways in: send from a connected browser wallet, or copy/scan the address.
- * Every outcome is reported to the user — the previous version logged its
- * 403-from-RPC and insufficient-funds branches to the console and left the
- * dialog sitting open with no explanation.
+ * Two ways in: send from a wallet Privy has connected, or copy/scan the address.
+ * Every outcome is reported to the user — the version this replaces logged its
+ * failure branches to the console and left the dialog sitting open with no
+ * explanation.
  */
 
-const WalletMultiButton = dynamic(
-  () => import('@solana/wallet-adapter-react-ui').then((m) => m.WalletMultiButton),
-  { ssr: false, loading: () => <div className="h-11 animate-pulse rounded-lg bg-white/10" /> }
-);
+const ERC20_TRANSFER = parseAbi(['function transfer(address to, uint256 amount) returns (bool)']);
+
+/** Only the currencies make sense to top up with; equities are tipped, not funded. */
+const FUNDABLE = KNOWN_TOKENS.filter((t) => t.kind === 'stable' || t.kind === 'native');
 
 interface FundDialogProps {
   onClose: () => void;
@@ -32,70 +31,61 @@ interface FundDialogProps {
 
 /** Mounted only while open, so its state starts fresh each time. */
 export function FundDialog({ onClose, address, onFunded }: FundDialogProps) {
-  const { publicKey, sendTransaction, connected } = useWallet();
+  const { wallets } = useWallets();
+  const { sendTransaction } = useSendTransaction();
   const { toast } = useToast();
+
   const [amount, setAmount] = useState('');
+  const [symbol, setSymbol] = useState(DEFAULT_TOKEN.symbol);
   const [sending, setSending] = useState(false);
 
-  const solanaUri = useMemo(() => {
-    const params = new URLSearchParams({ label: 'Pourboire' });
-    const n = Number(amount);
-    if (Number.isFinite(n) && n > 0) params.set('amount', String(n));
-    return `solana:${address}?${params.toString()}`;
-  }, [address, amount]);
+  const wallet = wallets[0] ?? null;
+  const token = FUNDABLE.find((t) => t.symbol === symbol) ?? DEFAULT_TOKEN;
+
+  // EIP-681. Wallet apps read this straight into a send screen; plain scanners
+  // still show the address.
+  const paymentUri = useMemo(() => {
+    if (isNative(token)) return `ethereum:${address}@4663`;
+    return `ethereum:${token.address}@4663/transfer?address=${address}`;
+  }, [address, token]);
 
   const amountError = useMemo(() => {
     if (!amount.trim()) return null;
-    const n = Number(amount);
-    if (!Number.isFinite(n) || n <= 0) return 'Enter a valid amount';
-    return null;
-  }, [amount]);
+    try {
+      const base = toBaseUnits(amount, token.decimals);
+      if (base <= 0n) return 'Enter an amount greater than zero';
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  }, [amount, token]);
 
-  const canSend = connected && !amountError && Number(amount) > 0 && !sending;
+  const canSend = Boolean(wallet) && !amountError && amount.trim() !== '' && !sending;
 
   const send = async () => {
-    if (!canSend || !publicKey || !sendTransaction) return;
+    if (!canSend || !wallet) return;
     setSending(true);
     try {
-      const conn = new Connection(rpcUrl(), 'confirmed');
-      const lamports = Math.round(Number(amount) * LAMPORTS_PER_SOL);
+      const base = toBaseUnits(amount, token.decimals);
 
-      const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash('confirmed');
-      const tx = new Transaction({
-        feePayer: publicKey,
-        blockhash,
-        lastValidBlockHeight,
-      }).add(
-        SystemProgram.transfer({
-          fromPubkey: publicKey,
-          toPubkey: new PublicKey(address),
-          lamports,
-        })
-      );
+      const request = isNative(token)
+        ? { to: address as `0x${string}`, value: base }
+        : {
+            to: token.address!,
+            data: encodeFunctionData({
+              abi: ERC20_TRANSFER,
+              functionName: 'transfer',
+              args: [address as `0x${string}`, base],
+            }),
+          };
 
-      const signature = await sendTransaction(tx, conn);
-
-      // Confirm against the blockhash's validity window. The old code retried the
-      // whole transfer on timeout, which could send the amount a second time.
-      const result = await conn.confirmTransaction(
-        { signature, blockhash, lastValidBlockHeight },
-        'confirmed'
-      );
-
-      if (result.value.err) {
-        toast({
-          tone: 'error',
-          title: 'Transfer failed',
-          description: 'The network rejected the transaction. Nothing was sent.',
-        });
-        return;
-      }
+      const { hash } = await sendTransaction(request, { address: wallet.address });
 
       toast({
         tone: 'success',
-        title: `Added ${amount} SOL`,
+        title: `Sent ${amount} ${token.symbol}`,
         description: 'Your tip wallet balance will update shortly.',
-        action: { label: 'View on Solscan', href: explorerUrl(signature) },
+        action: { label: 'View on explorer', href: explorerUrl(hash) },
       });
       onFunded();
       onClose();
@@ -108,93 +98,97 @@ export function FundDialog({ onClose, address, onFunded }: FundDialogProps) {
 
   return (
     <Modal
-      open
       onClose={onClose}
+      open
       busy={sending}
       title="Add funds"
       description="Top up your tip wallet so you can send tips on X."
     >
       <div className="space-y-5">
         <div className="flex flex-col items-center gap-3 rounded-xl bg-white/5 p-4">
-          <QrCode value={solanaUri} label={`QR code for tip wallet address ${address}`} />
+          <QrCode value={paymentUri} label={`QR code for tip wallet address ${address}`} />
           <CopyButton
             value={address}
             describe="tip wallet address"
             className="bg-black/40 px-3 py-2"
           />
           <p className="text-center text-xs font-light leading-relaxed text-white/40">
-            Send SOL to this address from any wallet or exchange.
+            Send USDG or ETH on Robinhood Chain to this address.
           </p>
         </div>
 
         <div className="space-y-3 border-t border-white/10 pt-5">
-          <p className="text-sm font-light text-white/70">Or send from a connected wallet</p>
+          <p className="text-sm font-light text-white/70">
+            {wallet ? 'Or send from your connected wallet' : 'Connect a wallet to send directly'}
+          </p>
 
-          <label className="block">
-            <span className="sr-only">Amount in SOL</span>
-            <span className="relative block">
+          <div className="flex gap-2">
+            <label className="flex-1">
+              <span className="sr-only">Amount</span>
               <input
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 disabled={sending}
                 inputMode="decimal"
-                placeholder="0.5"
+                placeholder="10"
                 aria-invalid={Boolean(amountError)}
-                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 pr-14 text-base tabular-nums outline-none transition focus:border-white/30 focus-visible:ring-2 focus-visible:ring-white/40 disabled:opacity-50"
+                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-base tabular-nums outline-none transition focus:border-white/30 focus-visible:ring-2 focus-visible:ring-white/40 disabled:opacity-50"
               />
-              <span
-                aria-hidden
-                className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm font-light text-white/40"
+            </label>
+            <label>
+              <span className="sr-only">Token</span>
+              <select
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+                disabled={sending}
+                className="h-full rounded-lg border border-white/10 bg-black/40 px-3 py-2.5 text-sm outline-none transition focus:border-white/30 focus-visible:ring-2 focus-visible:ring-white/40 disabled:opacity-50"
               >
-                SOL
-              </span>
-            </span>
-            {amountError && (
-              <span role="alert" className="mt-1.5 block text-xs font-light text-red-300">
-                {amountError}
-              </span>
-            )}
-          </label>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <WalletMultiButton className="!h-11 !w-full !justify-center !rounded-lg !bg-purple-600 !text-sm !font-light hover:!bg-purple-700" />
-            <button
-              type="button"
-              onClick={send}
-              disabled={!canSend}
-              className="h-11 rounded-lg bg-blue-500 px-4 text-sm font-light transition hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {sending ? 'Sending…' : connected ? 'Send' : 'Connect first'}
-            </button>
+                {FUNDABLE.map((t) => (
+                  <option key={t.symbol} value={t.symbol} className="bg-neutral-900">
+                    {t.symbol}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
+
+          {amountError && (
+            <p role="alert" className="text-xs font-light text-red-300">
+              {amountError}
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={send}
+            disabled={!canSend}
+            className="h-11 w-full rounded-lg bg-[#00C805] px-4 text-sm font-medium text-black transition hover:bg-[#00B004] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {sending ? 'Sending…' : wallet ? `Send ${token.symbol}` : 'No wallet connected'}
+          </button>
         </div>
       </div>
     </Modal>
   );
 }
 
-function explorerUrl(signature: string): string {
-  const c = cluster();
-  const suffix = c === 'mainnet-beta' ? '' : `?cluster=${c === 'devnet' ? 'devnet' : 'testnet'}`;
-  return `https://solscan.io/tx/${signature}${suffix}`;
+function explorerUrl(hash: string): string {
+  return `https://robinhoodchain.blockscout.com/tx/${hash}`;
 }
 
-/** Turn the common wallet/RPC failures into something a person can act on. */
+/** Turn the common wallet failures into something a person can act on. */
 function describeError(e: unknown): string {
   const message = (e as Error)?.message ?? String(e);
   const lower = message.toLowerCase();
 
-  if (lower.includes('user rejected') || lower.includes('declined')) {
+  if (lower.includes('rejected') || lower.includes('denied') || lower.includes('cancel')) {
     return 'You cancelled the transaction in your wallet.';
   }
-  if (lower.includes('403') || lower.includes('forbidden')) {
-    return 'The Solana RPC refused the request. The app needs a provider RPC URL configured.';
+  if (lower.includes('insufficient')) {
+    return 'That wallet does not have enough to cover the amount plus gas.';
   }
-  if (lower.includes('insufficient') || lower.includes('debit')) {
-    return 'Your connected wallet does not have enough SOL to cover the amount plus the network fee.';
-  }
-  if (lower.includes('blockhash') || lower.includes('expired')) {
-    return 'The transaction expired before it was confirmed. Nothing was sent — try again.';
+  if (lower.includes('chain') || lower.includes('network')) {
+    return 'Your wallet is on the wrong network — switch it to Robinhood Chain and try again.';
   }
   return message;
 }

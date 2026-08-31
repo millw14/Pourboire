@@ -3,7 +3,7 @@ import ProcessedTweet from '@/models/ProcessedTweet';
 import User, { type ITransaction } from '@/models/User';
 import type { ReceiptParams } from './receipt';
 import { BOT_HANDLE, type InfoCommand } from './tip-command';
-import { SOL, findTokenBySymbol, formatAmount } from './tokens';
+import { DEFAULT_TOKEN, findTokenBySymbol, formatAmount } from './tokens';
 
 /**
  * Answering the questions people tag the bot with.
@@ -83,7 +83,7 @@ export async function buildInfoReply(params: {
         from: BOT_HANDLE,
         to: subject,
         amount: '',
-        color: SOL.color,
+        color: DEFAULT_TOKEN.color,
         qr: user.walletAddress,
         footer: 'pourboire.tips',
       },
@@ -112,7 +112,7 @@ function helpReply(senderHandle: string): InfoReply {
       from: BOT_HANDLE,
       to: '',
       amount: '',
-      color: SOL.color,
+      color: DEFAULT_TOKEN.color,
       lines: lines.join('\n'),
       footer: 'pourboire.tips',
     },
@@ -154,7 +154,7 @@ function statsReply(params: {
   const formatted = [...totals.entries()]
     .map(([symbol, { raw, decimals }]) => {
       const known = findTokenBySymbol(symbol);
-      return formatAmount(raw, known ?? { ...SOL, symbol, decimals });
+      return formatAmount(raw, known ?? { ...DEFAULT_TOKEN, symbol, decimals });
     })
     // Four lines leaves room for the two summary lines below without shrinking
     // the type on the card.
@@ -177,7 +177,7 @@ function statsReply(params: {
       from: BOT_HANDLE,
       to: subject,
       amount: '',
-      color: soleToken?.color ?? SOL.color,
+      color: soleToken?.color ?? DEFAULT_TOKEN.color,
       lines: lines.join('\n'),
       footer: `pourboire.tips/${subject.replace(/^@/, '')}`,
     },

@@ -14,9 +14,9 @@ export default function Home() {
     <div className="flex min-h-screen w-full flex-col">
       <main id="main" className="flex-1">
         <Hero
-          title="Tip anyone on X with Solana"
+          title="Tip anyone on X, in dollars"
           description="Reply to any post with @Pourboireonsol and an amount. They don't need a wallet — if they haven't signed up, we hold the tip until they do."
-          badgeText="Solana payments"
+          badgeText="Robinhood Chain"
           badgeLabel="Live"
           ctaButtons={[
             { text: 'Open your wallet', href: '/dashboard', primary: true },

@@ -12,7 +12,7 @@ import QRCode from 'qrcode';
  */
 
 interface QrCodeProps {
-  /** Usually a `solana:` URI. */
+  /** Usually an EIP-681 `ethereum:` URI. */
   value: string;
   size?: number;
   label: string;

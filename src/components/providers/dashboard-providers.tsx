@@ -2,16 +2,14 @@
 
 import type { ReactNode } from 'react';
 import { PrivyProvider } from './privy-provider';
-import { WalletProvider } from './wallet-provider';
 
 /**
- * Single entry point for the wallet stack, so the dashboard layout can pull all
- * of it in with one dynamic import and one loading state.
+ * The dashboard's client-side provider stack.
+ *
+ * Now just Privy: it handles EVM wallets natively, so the separate Solana
+ * wallet-adapter tree — a second ConnectionProvider, its own modal, and 36
+ * bundled adapters — is gone entirely.
  */
 export function DashboardProviders({ children }: { children: ReactNode }) {
-  return (
-    <PrivyProvider>
-      <WalletProvider>{children}</WalletProvider>
-    </PrivyProvider>
-  );
+  return <PrivyProvider>{children}</PrivyProvider>;
 }

@@ -5,7 +5,7 @@ import connectDB from '@/lib/mongodb';
 import User, { type ITransaction } from '@/models/User';
 import Giveaway from '@/models/Giveaway';
 import { normalizeHandle } from '@/lib/auth';
-import { findTokenBySymbol, formatAmount, type TokenInfo } from '@/lib/tokens';
+import { formatAmount, tokenFromRecord, type TokenInfo } from '@/lib/tokens';
 import { exampleCommand } from '@/lib/tip-command';
 import { CopyButton } from '@/components/ui/copy-button';
 import Footer from '@/components/ui/footer';
@@ -41,7 +41,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!handle) return { title: 'Not found' };
   return {
     title: `${handle} on Pourboire`,
-    description: `Tip ${handle} on X with Solana.`,
+    description: `Tip ${handle} on X, on Robinhood Chain.`,
   };
 }
 
@@ -69,13 +69,7 @@ export default async function ProfilePage({ params }: Props) {
   const byTipper = new Map<string, { count: number }>();
 
   for (const tx of received) {
-    const token = findTokenBySymbol(tx.tokenSymbol) ?? {
-      symbol: tx.tokenSymbol,
-      name: tx.tokenSymbol,
-      mint: tx.tokenMint,
-      decimals: tx.tokenDecimals,
-      color: '#8B8B8B',
-    };
+    const token = tokenFromRecord(tx);
     const key = token.symbol;
     const entry = byToken.get(key) ?? { token, received: 0n, count: 0 };
     entry.received += BigInt(tx.amount);
@@ -219,13 +213,7 @@ export default async function ProfilePage({ params }: Props) {
             </h2>
             <ul className="divide-y divide-white/10 overflow-hidden rounded-xl border border-white/10">
               {giveaways.map((g) => {
-                const token = findTokenBySymbol(g.tokenSymbol) ?? {
-                  symbol: g.tokenSymbol,
-                  name: g.tokenSymbol,
-                  mint: g.tokenMint,
-                  decimals: g.tokenDecimals,
-                  color: '#8B8B8B',
-                };
+                const token = tokenFromRecord(g);
                 return (
                   <li key={g.tweetId}>
                     <a
@@ -252,13 +240,7 @@ export default async function ProfilePage({ params }: Props) {
             </h2>
             <ul className="divide-y divide-white/10 overflow-hidden rounded-xl border border-white/10">
               {recent.map((tx, i) => {
-                const token = findTokenBySymbol(tx.tokenSymbol) ?? {
-                  symbol: tx.tokenSymbol,
-                  name: tx.tokenSymbol,
-                  mint: tx.tokenMint,
-                  decimals: tx.tokenDecimals,
-                  color: '#8B8B8B',
-                };
+                const token = tokenFromRecord(tx);
                 return (
                   <li
                     key={`${tx.txHash}-${i}`}

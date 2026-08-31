@@ -2,45 +2,35 @@
 
 import { PrivyProvider as PrivyProviderBase } from '@privy-io/react-auth';
 import type { FC, ReactNode } from 'react';
-import { cluster } from '@/lib/env';
+import { defineChain } from 'viem';
+import { cluster, rpcUrl } from '@/lib/env';
 
 /**
- * Privy, configured for the cluster this deployment actually runs on.
+ * Privy, configured for Robinhood Chain.
  *
- * Two problems are fixed here:
- *
- *  1. The chain config was hardcoded to Solana **devnet** while the API routes
- *     defaulted to **mainnet-beta**. A user could approve a transaction that the
- *     UI described as devnet while real money moved.
- *
- *  2. The old `isClient` gate rendered `<>{children}</>` on the server and first
- *     client render, then swapped in `<PrivyProviderBase>` after mount. Because
- *     React reconciles that position by type, the entire app below it unmounted
- *     and remounted on every load — throwing away all component state and
- *     re-running every effect. `ssr: false` on the dynamic import handles this
- *     properly instead.
+ * The chain is declared here rather than imported from `@/lib/chain`, which is
+ * server-only — but both derive from the same `cluster()` value, so the browser
+ * cannot end up on testnet while the server signs mainnet transfers. That
+ * mismatch was a real bug in the previous version: the client was pinned to devnet
+ * while the API defaulted to mainnet.
  */
 
-const CHAINS = {
-  'mainnet-beta': {
-    id: 101,
-    name: 'Solana',
-    network: 'mainnet-beta',
-    rpc: 'https://api.mainnet-beta.solana.com',
+const MAINNET = defineChain({
+  id: 4663,
+  name: 'Robinhood Chain',
+  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.mainnet.chain.robinhood.com'] } },
+  blockExplorers: {
+    default: { name: 'Blockscout', url: 'https://robinhoodchain.blockscout.com' },
   },
-  devnet: {
-    id: 103,
-    name: 'Solana Devnet',
-    network: 'devnet',
-    rpc: 'https://api.devnet.solana.com',
-  },
-  testnet: {
-    id: 102,
-    name: 'Solana Testnet',
-    network: 'testnet',
-    rpc: 'https://api.testnet.solana.com',
-  },
-} as const;
+});
+
+const TESTNET = defineChain({
+  ...MAINNET,
+  id: 46630,
+  name: 'Robinhood Chain Testnet',
+  rpcUrls: { default: { http: ['https://rpc.testnet.chain.robinhood.com'] } },
+});
 
 export const PrivyProvider: FC<{ children: ReactNode }> = ({ children }) => {
   const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
@@ -51,8 +41,11 @@ export const PrivyProvider: FC<{ children: ReactNode }> = ({ children }) => {
     return <>{children}</>;
   }
 
-  const active = CHAINS[cluster()];
-  const rpc = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || active.rpc;
+  const base = cluster() === 'mainnet' ? MAINNET : TESTNET;
+  const chain = defineChain({
+    ...base,
+    rpcUrls: { default: { http: [rpcUrl()] } },
+  });
 
   return (
     <PrivyProviderBase
@@ -60,22 +53,15 @@ export const PrivyProvider: FC<{ children: ReactNode }> = ({ children }) => {
       config={{
         loginMethods: ['twitter', 'email', 'wallet'],
         embeddedWallets: {
-          solana: { createOnLogin: 'users-without-wallets' },
+          ethereum: { createOnLogin: 'users-without-wallets' },
         },
         appearance: {
           theme: 'dark',
-          accentColor: '#3B82F6',
+          accentColor: '#00C805',
           logo: '/pour.png',
         },
-        supportedChains: [
-          {
-            id: active.id,
-            name: active.name,
-            network: active.network,
-            nativeCurrency: { name: 'SOL', symbol: 'SOL', decimals: 9 },
-            rpcUrls: { default: { http: [rpc] }, public: { http: [rpc] } },
-          },
-        ],
+        defaultChain: chain,
+        supportedChains: [chain],
       }}
     >
       {children}

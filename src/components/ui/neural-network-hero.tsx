@@ -54,7 +54,7 @@ function usePrefersReducedMotion(): boolean {
 export default function Hero({
   title,
   description,
-  badgeText = 'Solana payments',
+  badgeText = 'Robinhood Chain',
   badgeLabel = 'Live',
   ctaButtons = [],
   microDetails = [],

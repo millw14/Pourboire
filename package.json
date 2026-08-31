@@ -19,12 +19,6 @@
     "@privy-io/server-auth": "^1.32.5",
     "@react-three/drei": "^10.7.6",
     "@react-three/fiber": "^9.4.0",
-    "@solana/spl-token": "^0.4.15",
-    "@solana/wallet-adapter-phantom": "^0.9.28",
-    "@solana/wallet-adapter-react": "^0.15.39",
-    "@solana/wallet-adapter-react-ui": "^0.9.39",
-    "@solana/wallet-adapter-solflare": "^0.6.32",
-    "@solana/web3.js": "^1.98.4",
     "clsx": "^2.1.1",
     "libsodium-wrappers": "^0.7.15",
     "mongoose": "^8.19.2",
@@ -35,7 +29,8 @@
     "server-only": "^0.0.1",
     "tailwind-merge": "^3.3.1",
     "three": "^0.180.0",
-    "twitter-api-v2": "^1.27.0"
+    "twitter-api-v2": "^1.27.0",
+    "viem": "^2.21.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
