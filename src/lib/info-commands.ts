@@ -2,7 +2,7 @@ import 'server-only';
 import ProcessedTweet from '@/models/ProcessedTweet';
 import User, { type ITransaction } from '@/models/User';
 import type { ReceiptParams } from './receipt';
-import { BOT_HANDLE, type InfoCommand } from './tip-command';
+import { BOT_HANDLE, helpLines, type InfoCommand } from './tip-command';
 import { DEFAULT_TOKEN, findTokenBySymbol, formatAmount } from './tokens';
 
 /**
@@ -94,16 +94,10 @@ export async function buildInfoReply(params: {
 }
 
 function helpReply(senderHandle: string): InfoReply {
-  // Written out rather than generated from the parser: these are the forms
-  // worth teaching, not every form that happens to parse.
-  const lines = [
-    'tip 0.5 SOL — pays whoever wrote the post',
-    'tip 0.5 SOL @alice — pays someone specific',
-    'split 3 SOL @a @b @c — divides between them',
-    'rain 5 SOL — splits between repliers',
-    'match — repeats the tip you replied to',
-    'giveaway 5 SOL to 10 in 2h — draws winners',
-  ];
+  // Taken from the parser's own module, not written out again here. The previous
+  // hand-written copy still said SOL after the chain move, so five of the six
+  // commands on this card were ones the bot itself refused.
+  const lines = helpLines();
 
   return {
     text: `${senderHandle} here's what I understand — reply to any post with one of these.`,

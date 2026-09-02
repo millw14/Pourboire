@@ -375,6 +375,33 @@ export function parseTipCommand(text: string): TipCommand | null {
   return parsed?.kind === 'tip' ? parsed : null;
 }
 
+/**
+ * The commands the bot teaches, and what each one does.
+ *
+ * These live here, next to the parser, because they were previously written out
+ * a second time inside `helpReply()` and drifted: the chain migration renamed
+ * SOL to USDG in the marketing copy but missed that array, so the bot's own help
+ * card advertised six commands of which five it then refused — and paid to send
+ * them. The regression test written to catch exactly that had *also* retyped the
+ * lines, so it passed against its own copy while the real card was broken.
+ *
+ * One array, imported by the help card and by the test that parses every entry.
+ * A command that stops parsing now fails the build.
+ */
+export const HELP_COMMANDS: readonly { command: string; describes: string }[] = [
+  { command: `tip 5 ${DEFAULT_TOKEN.symbol}`, describes: 'pays whoever wrote the post' },
+  { command: `tip 5 ${DEFAULT_TOKEN.symbol} @alice`, describes: 'pays someone specific' },
+  { command: 'tip 1 NVDA @alice', describes: 'or a share, or gold' },
+  { command: `split 30 ${DEFAULT_TOKEN.symbol} @a @b @c`, describes: 'divides between them' },
+  { command: `rain 50 ${DEFAULT_TOKEN.symbol}`, describes: 'splits between repliers' },
+  { command: 'match', describes: 'repeats the tip you replied to' },
+] as const;
+
+/** Rendered form, e.g. `tip 5 USDG — pays whoever wrote the post`. */
+export function helpLines(): string[] {
+  return HELP_COMMANDS.map((h) => `${h.command} — ${h.describes}`);
+}
+
 /** The canonical examples shown in the UI, generated from the same rules. */
 export function exampleCommand(amount = 5): string {
   return `${BOT_HANDLE} tip ${amount} ${DEFAULT_TOKEN.symbol}`;

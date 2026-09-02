@@ -9,6 +9,7 @@ import {
   BOT_HANDLE,
   RAIN_DEFAULT_RECIPIENTS,
   RETIRED_SYMBOLS,
+  HELP_COMMANDS,
   retiredSymbolIn,
 } from './tip-command.ts';
 
@@ -298,11 +299,39 @@ test('rain rejects a zero or absent amount', () => {
   assert.equal(parseCommand('@Pourboireonsol rain'), null);
 });
 
-test('every command the UI teaches actually parses', () => {
+test('every command on the bot help card actually parses', () => {
+  // The previous version of this test RETYPED the help card's lines in USDG
+  // while the real card in info-commands.ts still said SOL — so it passed
+  // against its own copy while five of the six live commands were ones the
+  // parser refused. Reading HELP_COMMANDS directly is the point: there is now
+  // one array, and a command that stops parsing fails the build.
+  assert.ok(HELP_COMMANDS.length > 0, 'help card is empty');
+
+  for (const { command } of HELP_COMMANDS) {
+    assert.notEqual(
+      parseCommand(`${BOT_HANDLE} ${command}`),
+      null,
+      `the help card teaches "${command}" but the parser refuses it`
+    );
+  }
+});
+
+test('the help card never teaches a retired symbol', () => {
+  // A retired symbol parses to null, so the test above would already catch it —
+  // but this says why, which is what someone reading a failure needs.
+  for (const { command } of HELP_COMMANDS) {
+    assert.equal(
+      retiredSymbolIn(`${BOT_HANDLE} ${command}`),
+      null,
+      `the help card teaches a retired symbol: "${command}"`
+    );
+  }
+});
+
+test('every command the marketing copy teaches actually parses', () => {
   // The chain migration broke this once: the homepage still advertised
   // `tip 100000 BONK` after BONK stopped being a known symbol, so the single
   // most prominent example on the site was a command the bot would refuse.
-  // Generated forms and hand-written copy are both checked here.
   const taught = [
     exampleCommand(5),
     exampleRain(10),
@@ -311,12 +340,6 @@ test('every command the UI teaches actually parses', () => {
     `${BOT_HANDLE} split 30 USDG @a @b @c`,
     `${BOT_HANDLE} match`,
     `${BOT_HANDLE} wallet @alice`,
-    // The six lines on the bot's own help card.
-    `${BOT_HANDLE} tip 0.5 USDG`,
-    `${BOT_HANDLE} tip 0.5 USDG @alice`,
-    `${BOT_HANDLE} split 3 USDG @a @b @c`,
-    `${BOT_HANDLE} rain 5 USDG`,
-    `${BOT_HANDLE} giveaway 5 USDG to 10 in 2h`,
   ];
 
   for (const command of taught) {
