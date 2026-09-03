@@ -139,49 +139,32 @@ function isDefiniteRejection(message: string): boolean {
 const CONFIRM_TIMEOUT_MS = 30_000;
 
 /**
- * Send native ETH or an ERC-20 from a custodial key.
+ * Broadcast one transaction and resolve it to a TransferOutcome.
  *
- * `token` of null means native ETH.
+ * The single place that decides what a network failure means. Both plain
+ * transfers and contract calls go through it, because getting this wrong in two
+ * places is how the same money gets sent twice.
+ *
+ * Broadcast happens *inside* the try. viem's HTTP transport has a finite request
+ * timeout, so if the response to eth_sendRawTransaction is lost after the
+ * sequencer accepted it — a dropped socket, a 502 at the RPC edge — the call
+ * rejects while the transaction is in the mempool and will land. Letting that
+ * escape produced "something went wrong, please try again" for money that had
+ * already moved, which is exactly the retry that double-sends. A rejection is
+ * therefore `unknown`, not failure, unless the node explicitly refused it before
+ * accepting.
  */
-export async function transfer(params: {
-  privateKey: Hex;
-  to: Address;
-  amount: bigint;
-  token: Address | null;
-}): Promise<TransferOutcome> {
-  const account = privateKeyToAccount(params.privateKey);
-  const chain = activeChain();
-  const wallet = createWalletClient({ account, chain, transport: http(rpcUrl()) });
+async function sendAndConfirm(
+  privateKey: Hex,
+  request: { to: Address; data?: Hex; value?: bigint; gas: bigint }
+): Promise<TransferOutcome> {
+  const account = privateKeyToAccount(privateKey);
+  const wallet = createWalletClient({ account, chain: activeChain(), transport: http(rpcUrl()) });
   const pub = getPublicClient();
 
-  // Broadcast inside the contract, not outside it.
-  //
-  // viem's HTTP transport has a finite request timeout. If the response to
-  // eth_sendRawTransaction is lost after the sequencer accepted it — a dropped
-  // socket, a 502 from the RPC edge — this call rejects while the transaction is
-  // in the mempool and will land. Letting that exception escape produced a
-  // "something went wrong, please try again" in the UI for money that had
-  // already moved, which is exactly the retry that sends it twice.
-  //
-  // A rejection here is therefore reported as `unconfirmed`, not as failure,
-  // unless the node explicitly refused the transaction before accepting it.
   let hash: Hex;
   try {
-    hash = params.token
-      ? await wallet.sendTransaction({
-          to: params.token,
-          data: encodeFunctionData({
-            abi: ERC20_ABI,
-            functionName: 'transfer',
-            args: [params.to, params.amount],
-          }),
-          gas: ERC20_GAS_LIMIT,
-        })
-      : await wallet.sendTransaction({
-          to: params.to,
-          value: params.amount,
-          gas: NATIVE_GAS_LIMIT,
-        });
+    hash = await wallet.sendTransaction(request);
   } catch (e) {
     const message = (e as Error)?.message ?? String(e);
     if (isDefiniteRejection(message)) {
@@ -207,6 +190,53 @@ export async function transfer(params: {
       return { status: 'unconfirmed', hash };
     }
   }
+}
+
+/**
+ * Send native ETH or an ERC-20 from a custodial key.
+ *
+ * `token` of null means native ETH.
+ */
+export async function transfer(params: {
+  privateKey: Hex;
+  to: Address;
+  amount: bigint;
+  token: Address | null;
+}): Promise<TransferOutcome> {
+  return params.token
+    ? sendAndConfirm(params.privateKey, {
+        to: params.token,
+        data: encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: 'transfer',
+          args: [params.to, params.amount],
+        }),
+        gas: ERC20_GAS_LIMIT,
+      })
+    : sendAndConfirm(params.privateKey, {
+        to: params.to,
+        value: params.amount,
+        gas: NATIVE_GAS_LIMIT,
+      });
+}
+
+/**
+ * Call a contract from a custodial key, with the same outcome discipline as a
+ * transfer. Used by the swap path for `approve` and `exactInputSingle`.
+ */
+export async function sendCall(params: {
+  privateKey: Hex;
+  to: Address;
+  data: Hex;
+  gas: bigint;
+  value?: bigint;
+}): Promise<TransferOutcome> {
+  return sendAndConfirm(params.privateKey, {
+    to: params.to,
+    data: params.data,
+    gas: params.gas,
+    ...(params.value !== undefined ? { value: params.value } : {}),
+  });
 }
 
 /** Native ETH balance. */
