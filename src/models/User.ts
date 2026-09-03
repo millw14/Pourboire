@@ -84,6 +84,25 @@ export interface IUser extends Document {
     reason?: string;
     updatedAt?: Date;
   }[];
+  /**
+   * Gas we have put into this wallet on the user's behalf.
+   *
+   * `outstandingWei` is the part not yet demonstrably spent, and it is reserved
+   * from what the wallet may send — otherwise the sponsor is a faucet with a
+   * withdraw button, since ETH is both withdrawable and tippable. It ratchets
+   * down as the balance falls and never up.
+   *
+   * The two counters back the per-user caps. They are safe as plain
+   * read-modify-write because the one-unresolved-grant index on
+   * `GasSponsorship` already serialises a single user's requests.
+   */
+  gasSponsored?: {
+    outstandingWei: string;
+    /** UTC `YYYY-MM-DD`. A different day means `todayWei` reads as zero. */
+    day?: string;
+    todayWei: string;
+    lifetimeWei: string;
+  };
   /** Preferred local currency, for display. Not a payout instruction. */
   preferredCurrency?: string;
   /**
@@ -190,6 +209,16 @@ const UserSchema = new Schema<IUser>(
       // `verifiedSubjectFor`, and defaulting would rewrite every document for
       // no gain.
       required: false,
+    },
+    // Wei amounts are strings throughout this codebase: BigInt does not survive
+    // BSON, and a Number would lose precision. No default — an absent object and
+    // a zeroed one mean the same thing, and defaulting would rewrite every
+    // existing document for nothing.
+    gasSponsored: {
+      outstandingWei: String,
+      day: String,
+      todayWei: String,
+      lifetimeWei: String,
     },
     preferredCurrency: String,
     payoutCountry: String,

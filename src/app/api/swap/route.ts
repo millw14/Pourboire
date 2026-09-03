@@ -8,6 +8,7 @@ import { explorerTxUrl, isAddress, nativeBalance, tokenBalance, estimateFeeWei }
 import { findTokenBySymbol, formatAmount, toBaseUnits, type TokenInfo } from '@/lib/tokens';
 import { executeSwap, quoteSwap, PoolLookupError } from '@/lib/swap/router';
 import { SwapQuoteError, bindToAcceptedFloor } from '@/lib/swap/quote';
+import { ensureGasFor } from '@/lib/gas/sponsor';
 import type { Address, Hex } from 'viem';
 
 /**
@@ -32,13 +33,19 @@ const MAX_SLIPPAGE_BPS = 500;
 /**
  * Confirmation waits, budgeted to finish inside `maxDuration`.
  *
- * 15 + 20 = 35s leaves 25s for pool discovery, balance reads, signing and the
- * response. The platform killing this invocation mid-wait is worse than giving
- * up early: an early return still carries the transaction hash, while a 504
- * carries nothing and reads to the client as "try again".
+ * Three of them now — a gas grant, an approval, and the swap — and 8 + 8 + 16
+ * = 32s is LESS than the 15 + 20 it replaces. The route gained a confirmation
+ * and still finishes sooner than it did.
+ *
+ * The measured non-waiting work is around 5s at realistic RPC latency (pool
+ * discovery alone is 24 eth_calls), so the remainder is margin for a cold start
+ * or a degraded RPC — conditions that tend to arrive together. Being killed by
+ * the platform mid-wait is worse than giving up early: an early return still
+ * carries the transaction hash, while a 504 carries nothing and reads to the
+ * client as an invitation to retry.
  */
-const APPROVE_CONFIRM_MS = 15_000;
-const SWAP_CONFIRM_MS = 20_000;
+const APPROVE_CONFIRM_MS = 8_000;
+const SWAP_CONFIRM_MS = 16_000;
 
 interface Parsed {
   from: TokenInfo;
@@ -210,15 +217,20 @@ export async function POST(req: NextRequest) {
     // the one the preview happened to compute.
     const quoted = describe(binding.floor);
 
-    // Gas is ETH regardless of which tokens move, and a swap is two transactions.
+    // Gas is ETH regardless of which tokens move, and a swap is two
+    // transactions. Someone who was tipped USDG has no ETH at all — which is
+    // exactly the person this path exists for — so cover the shortfall rather
+    // than refuse. `ensureGasFor` returns ok having granted nothing when the
+    // wallet can already pay, so the common case costs one balance read.
     const fee = await estimateFeeWei(true);
-    const eth = await nativeBalance(owner);
-    if (eth < fee * 2n) {
-      return fail(
-        400,
-        'Not enough ETH to cover gas for the approval and the swap. Top up a little ETH and try again.',
-        'insufficient_gas'
-      );
+    const gas = await ensureGasFor({
+      user,
+      intent: 'swap',
+      requiredWei: fee * 2n,
+      signedInAs: caller.privyUserId,
+    });
+    if (!gas.ok) {
+      return fail(400, gas.message, 'insufficient_gas');
     }
 
     const keyBytes = await decryptPrivateKey(user.encryptedPrivateKey!);

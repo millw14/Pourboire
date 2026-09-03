@@ -3,7 +3,8 @@ import connectDB from '@/lib/mongodb';
 import { requireCaller } from '@/lib/auth';
 import { check, handleError, ok, rateLimit, tooManyRequests, fail } from '@/lib/api';
 import { resolveCallerUser } from '@/lib/wallets';
-import { explorerTxUrl, isAddress } from '@/lib/chain';
+import { estimateFeeWei, explorerTxUrl, isAddress } from '@/lib/chain';
+import { ensureGasFor } from '@/lib/gas/sponsor';
 import { parseTokenAmount, resolveToken, settleTransfer } from '@/lib/settle';
 import { formatAmount } from '@/lib/tokens';
 
@@ -49,6 +50,23 @@ export async function POST(req: NextRequest) {
 
     const parsed = parseTokenAmount(String(body.amount ?? ''), token);
     if (!parsed.ok) return fail(400, parsed.message, 'invalid_amount');
+
+    // Cover the gas if they cannot. A tipped wallet holds the token and no ETH,
+    // which is the state this whole feature exists for — and it is reachable
+    // here only because the caller is a signed-in session, never a tweet.
+    if (token.info.address !== null) {
+      const gas = await ensureGasFor({
+        user,
+        intent: 'withdraw',
+        requiredWei: await estimateFeeWei(true),
+        signedInAs: caller.privyUserId,
+      });
+      if (!gas.ok && gas.reason !== 'not_needed') {
+        // Not fatal on its own — settleTransfer checks the balance again and
+        // will refuse with its own message if the wallet still cannot pay.
+        console.warn('[withdraw] gas sponsorship declined:', gas.reason);
+      }
+    }
 
     const result = await settleTransfer({
       sender: user,

@@ -116,3 +116,90 @@ rather than quoting from a partial comparison.
 exercised without a real mainnet transaction. Gas is around 0.5 gwei, so a
 one-dollar USDG swap would settle it — but that is real money in a custodial
 wallet, and it is the owner's call to make, not ours.
+
+## Gas: the reason none of the above worked
+
+Everything above assumes the holder can move their own money. Until now they
+could not.
+
+A tip mints a custodial wallet and sends it USDG. Nothing anywhere funded ETH,
+and on an EVM chain you cannot spend a token you own without gas — so the person
+this product is built for, the one who was tipped and had never heard of us,
+held a balance they could not withdraw, could not swap, and could not cash out.
+`/api/me` has called this "the state people actually get stuck in" since the
+chain migration. The swap path made it worse: a swap is two transactions.
+
+So the app now covers the shortfall, from a sponsor wallet that holds ETH and
+nothing else. It is off unless `SPONSOR_PRIVATE_KEY` is set, and with it unset
+the behaviour is exactly what it was before.
+
+### What it costs
+
+Measured on this chain rather than assumed — gas is around 0.47 gwei, and ETH
+prices at about 2,457 USDG across three on-chain WETH/USDG pools:
+
+| action | gas | cost |
+|---|---|---|
+| USDG transfer | 48,436 | $0.06 |
+| approve | 58,572 | $0.07 |
+| `exactInputSingle` | 175,085 | $0.22 |
+| a whole swap | 233,657 | $0.29 |
+
+Sponsorship is a rounding error, so the design optimises for blast radius rather
+than for efficiency.
+
+### What stops it being a faucet
+
+The obvious failure is that a top-up is just free money. Four things prevent it,
+and the first is the one that matters:
+
+1. **Sponsored ETH cannot be withdrawn.** `withdraw {"token":"ETH"}` and
+   `tip 0.001 ETH @someone` settle through the same native branch, so without
+   this the sponsor is a faucet with a withdraw button — put ETH in, take ETH
+   out, lose only the 21,000 gas of the withdrawal. An outstanding grant is
+   subtracted from what the wallet may send, and ratchets down only as the
+   balance falls.
+2. **The grant is the shortfall, never a fixed amount.** A grant that went
+   unused is still in the wallet, so it reduces the next one to zero. An idle
+   loop stops paying out after the first grant without having to detect that it
+   is a loop.
+3. **Only a signed-in account is eligible.** A tweet mints a custodial wallet
+   for any handle it names, so "a user row exists" costs an attacker nothing. A
+   Privy identity is the cheapest thing here that is not free.
+4. **Caps at three levels**, bounding one account to 0.01 ETH for life and
+   everyone together to 0.05 ETH a day. The global one is a single filtered
+   `$inc` where a miss *is* the refusal — `rateLimit()` could not do this job,
+   because its own comment says it is per-warm-instance and Vercel will happily
+   run many.
+
+### What it deliberately does not do
+
+**The bot cannot reach it.** Tips, rain and giveaways run unattended on a cron,
+and an unattended loop that can drain a hot wallet is worse than a user-facing
+one because nobody is watching it. Sponsorship is invoked from three session
+routes only — withdraw, swap, payout — and a test asserts that list is exactly
+those three, and that nothing on the tweet-driven path imports the modules that
+can spend.
+
+**The key never leaves one file.** `lib/gas/wallet.ts` is the only module that
+reads `SPONSOR_PRIVATE_KEY`, and it hands out a callback rather than the key, so
+there is no value for a caller to hold, store, or log. It is raw hex from the
+environment, deliberately a different shape in a different place from the
+libsodium-wrapped custodial keys, so a refactor that confuses the two fails
+rather than quietly signing with the wrong wallet. Three tests hold that shape.
+
+### The alternative, and why not yet
+
+USDG implements EIP-3009, so the custodial key could sign a
+`transferWithAuthorization` and the sponsor could submit it and pay the gas —
+no ETH would ever reach a user wallet, and there would be no drain vector at
+all. It is genuinely the better mechanism for a transfer, and it has a second
+benefit worth recording: `validBefore` turns the unresolvable `unknown` state
+into a bounded one, because once the deadline passes and `authorizationState`
+still reads false, the money provably did not move.
+
+It is not built because it cannot serve a swap. The router pulls `tokenIn` from
+`msg.sender`, so a relayed call would be spending the relayer's tokens, not the
+user's. Top-up is needed for that path regardless — and adding a relay first
+would not remove the risky mechanism, only delay it while doubling the surface
+to maintain.

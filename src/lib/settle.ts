@@ -1,8 +1,10 @@
 import 'server-only';
 import type { Address, Hex } from 'viem';
 import { decryptPrivateKey } from './crypto';
+import { ratchetOutstanding, withdrawableNativeWei } from './gas/policy.ts';
 import {
   ERC20_ABI,
+  GAS_RESERVE_WEI,
   estimateFeeWei,
   getPublicClient,
   isAddress,
@@ -144,11 +146,33 @@ export async function settleTransfer(params: {
 
   if (native) {
     // One balance covers both the amount and the gas.
-    if (amount + fee > ethBalance) {
-      return { ok: false, message: `not enough ETH — ${formatAmount(spendableWei(ethBalance), NATIVE)} available after gas` };
+    //
+    // Gas we sponsored is subtracted first. It landed here so the holder could
+    // move the token they were tipped, and both this path and `tip 0.001 ETH`
+    // would otherwise send it straight back out — which would make the sponsor
+    // a faucet with a withdraw button, losing only the gas of the withdrawal.
+    const sendable = withdrawableNativeWei({
+      balanceWei: ethBalance,
+      outstandingWei: ratchetOutstanding(
+        BigInt(sender.gasSponsored?.outstandingWei ?? '0'),
+        ethBalance
+      ),
+      reserveWei: GAS_RESERVE_WEI,
+    });
+    if (amount + fee > ethBalance || amount > sendable) {
+      return {
+        ok: false,
+        message: `not enough ETH — ${formatAmount(sendable, NATIVE)} available after gas`,
+      };
     }
   } else {
     // Two separate balances, and running out of either stops the transfer.
+    //
+    // Gas sponsorship is deliberately NOT invoked here. This function is shared
+    // with the tweet-driven paths, and an unattended cron that can spend a hot
+    // wallet is worse than a user-facing one because nobody is watching it. A
+    // signed-in route tops the wallet up before calling this; by the time we get
+    // here the ETH is either present or the answer is no.
     if (ethBalance < fee) {
       return { ok: false, message: 'not enough ETH to pay gas — top up a little ETH and try again' };
     }

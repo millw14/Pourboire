@@ -10,6 +10,8 @@ import { resolvePayoutContext } from '@/lib/fiat/context';
 import { fundPayout } from '@/lib/fiat/payouts';
 import { STATUS_MESSAGES } from '@/lib/fiat/payout-state';
 import { findTokenBySymbol } from '@/lib/tokens';
+import { estimateFeeWei } from '@/lib/chain';
+import { ensureGasFor } from '@/lib/gas/sponsor';
 
 /**
  * Execute a quoted payout: move the stablecoin, then ask the provider to pay.
@@ -77,6 +79,20 @@ export async function POST(req: NextRequest) {
 
     const tokenInfo = findTokenBySymbol(payout.sourceToken);
     if (!tokenInfo) return fail(400, "I don't recognise that token", 'unknown_token');
+
+    // Gas has to be in the wallet BEFORE `fundPayout` signs, not merely on its
+    // way. `fundPayout` fixes a gas price at signing time and stores the raw
+    // bytes so the reconciler can rebroadcast exactly those — bytes signed
+    // against a balance that could not pay would be replayed forever.
+    const gas = await ensureGasFor({
+      user,
+      intent: 'payout',
+      requiredWei: await estimateFeeWei(tokenInfo.address !== null),
+      signedInAs: caller.privyUserId,
+    });
+    if (!gas.ok) {
+      return fail(400, gas.message, 'insufficient_gas');
+    }
 
     const keyBytes = await decryptPrivateKey(user.encryptedPrivateKey);
     const privateKey = `0x${Buffer.from(keyBytes).toString('hex')}` as Hex;
