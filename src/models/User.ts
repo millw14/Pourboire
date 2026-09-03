@@ -62,8 +62,35 @@ export interface IUser extends Document {
     reason?: string;
     updatedAt?: Date;
   };
+  /**
+   * Per-provider verification.
+   *
+   * Verification does not transfer between providers: each does its own KYC and
+   * issues its own subject reference, and a payout sent with another provider's
+   * reference means nothing to the one being asked to pay. `verification` above
+   * stays as the derived summary the dashboard already reads.
+   *
+   * Absent on every existing document, which is the normal case rather than a
+   * migration problem — nobody has one until the first time they ask to cash
+   * out. `verifiedSubjectFor` is written to treat absence as `unstarted`.
+   */
+  verifications?: {
+    provider: string;
+    status: 'unstarted' | 'pending' | 'action_required' | 'verified' | 'rejected';
+    /** The provider's id for this person. What a payout actually references. */
+    subjectRef?: string;
+    /** ISO 3166-1 alpha-2, as established by the provider. */
+    country?: string;
+    reason?: string;
+    updatedAt?: Date;
+  }[];
   /** Preferred local currency, for display. Not a payout instruction. */
   preferredCurrency?: string;
+  /**
+   * Where this person is paid, when the provider has not established it itself.
+   * A fallback for the corridor check, never an override — see `subject.ts`.
+   */
+  payoutCountry?: string;
   /** Reference to a card issued by the provider. Never card data itself. */
   card?: {
     providerRef: string;
@@ -141,7 +168,31 @@ const UserSchema = new Schema<IUser>(
       reason: String,
       updatedAt: Date,
     },
+    verifications: {
+      type: [
+        new Schema(
+          {
+            provider: { type: String, required: true },
+            status: {
+              type: String,
+              enum: ['unstarted', 'pending', 'action_required', 'verified', 'rejected'],
+              required: true,
+            },
+            subjectRef: String,
+            country: String,
+            reason: String,
+            updatedAt: Date,
+          },
+          { _id: false }
+        ),
+      ],
+      // No default. An absent array and an empty one mean the same thing to
+      // `verifiedSubjectFor`, and defaulting would rewrite every document for
+      // no gain.
+      required: false,
+    },
     preferredCurrency: String,
+    payoutCountry: String,
     card: {
       providerRef: String,
       provider: String,

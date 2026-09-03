@@ -6,6 +6,7 @@ import {
   http,
   encodeFunctionData,
   parseAbi,
+  keccak256,
   type Address,
   type Hex,
   type PublicClient,
@@ -305,4 +306,116 @@ export function explorerAddressUrl(address: string): string {
 /** `0x` + 40 hex characters, checked without pulling in a validator. */
 export function isAddress(value: string): value is Address {
   return /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Sign-then-broadcast, for payouts                                            */
+/*                                                                             */
+/* `transfer()` above learns a transaction's hash *from* the broadcast          */
+/* response, which is exactly why `unknown` has to exist: a dropped socket      */
+/* leaves a transaction that may be in the mempool and no identifier to look it */
+/* up by. That is acceptable for a tip — the amounts are small and a stuck one  */
+/* is triaged by hand — but not for a payout, where "we do not know" has to be  */
+/* resolvable by a machine.                                                     */
+/*                                                                             */
+/* So a payout signs first. The hash and nonce are known before the network is  */
+/* touched, they are written to the payout row, and only then is anything sent. */
+/* `unknown` collapses into `unconfirmed`, and every indeterminate case becomes */
+/* a receipt lookup rather than an operator's afternoon.                        */
+/* -------------------------------------------------------------------------- */
+
+export interface SignedTransfer {
+  raw: Hex;
+  hash: Hex;
+  nonce: number;
+  from: Address;
+}
+
+/**
+ * Sign a transfer without broadcasting it.
+ *
+ * The nonce is read at `pending` so consecutive signatures do not collide, and
+ * it is returned because the reconciler needs it: a chain nonce that has moved
+ * past this one proves the transaction can never land.
+ */
+export async function signTransfer(params: {
+  privateKey: Hex;
+  to: Address;
+  amount: bigint;
+  token: Address | null;
+}): Promise<SignedTransfer> {
+  const account = privateKeyToAccount(params.privateKey);
+  const wallet = createWalletClient({ account, chain: activeChain(), transport: http(rpcUrl()) });
+  const pub = getPublicClient();
+
+  const nonce = await pub.getTransactionCount({ address: account.address, blockTag: 'pending' });
+
+  const request = params.token
+    ? {
+        to: params.token,
+        data: encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: 'transfer' as const,
+          args: [params.to, params.amount] as const,
+        }),
+        gas: ERC20_GAS_LIMIT,
+      }
+    : { to: params.to, value: params.amount, gas: NATIVE_GAS_LIMIT };
+
+  const prepared = await wallet.prepareTransactionRequest({ ...request, nonce });
+  const raw = await wallet.signTransaction(prepared as never);
+
+  return {
+    raw,
+    // Derived from the bytes, not reported by the node — so it is known even if
+    // the broadcast is never answered.
+    hash: keccak256(raw),
+    nonce,
+    from: account.address,
+  };
+}
+
+export type BroadcastOutcome =
+  | { ok: true; hash: Hex }
+  | { ok: false; definite: boolean; reason: string };
+
+/**
+ * Push already-signed bytes.
+ *
+ * Safe to call repeatedly with the same `raw`: identical bytes produce an
+ * identical hash, so the chain deduplicates. `definite` says whether the node
+ * refused it outright — the caller uses `classifyBroadcast` to turn that into a
+ * state, because "already known" means opposite things on a first send and a
+ * replay and only the caller knows which this is.
+ */
+export async function broadcastRaw(raw: Hex): Promise<BroadcastOutcome> {
+  try {
+    const hash = await getPublicClient().sendRawTransaction({ serializedTransaction: raw });
+    return { ok: true, hash };
+  } catch (e) {
+    const reason = (e as Error)?.message ?? String(e);
+    return { ok: false, definite: isDefiniteRejection(reason), reason };
+  }
+}
+
+/** Whether a transaction has landed, and how. `missing` means no receipt yet. */
+export async function receiptStatus(hash: Hex): Promise<'success' | 'reverted' | 'missing'> {
+  try {
+    const receipt = await getPublicClient().getTransactionReceipt({ hash });
+    return receipt.status === 'success' ? 'success' : 'reverted';
+  } catch {
+    return 'missing';
+  }
+}
+
+/**
+ * The account's confirmed nonce.
+ *
+ * `latest`, deliberately, not `pending`: the reconciler compares this against a
+ * signed transaction's nonce to decide whether that transaction is permanently
+ * unincludable, and counting a pending transaction — possibly our own — would
+ * make it declare a live payout dead.
+ */
+export async function nonceAt(address: Address): Promise<number> {
+  return getPublicClient().getTransactionCount({ address, blockTag: 'latest' });
 }

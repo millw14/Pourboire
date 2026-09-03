@@ -85,16 +85,34 @@ export interface FiatResponse {
   payout: {
     available: boolean;
     reason?: string;
-    currencies: readonly string[];
+    /**
+     * Empty until a corridor has actually been paid on. A currency alone was
+     * never enough to describe a payout — Nigeria by bank and Nigeria by mobile
+     * money are separate claims.
+     */
+    corridors: ReadonlyArray<{
+      key: string;
+      country: string;
+      currency: string;
+      method: string;
+      methodLabel: string;
+      minMinor: string;
+      maxMinor: string;
+      requires: readonly string[];
+      /** A range, never a promise. */
+      etaHours: readonly [number, number];
+    }>;
   };
   card: {
     available: boolean;
     reason?: string;
+    brand: 'visa' | 'mastercard' | null;
     current: { status: string; last4?: string; brand?: string } | null;
   };
   verification: {
     status: 'unstarted' | 'pending' | 'action_required' | 'verified' | 'rejected';
     reason?: string;
+    payoutCountry: string | null;
     requiredFor: string[];
   };
 }

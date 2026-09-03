@@ -3,8 +3,10 @@ import connectDB from '@/lib/mongodb';
 import { requireCaller } from '@/lib/auth';
 import { handleError, ok, rateLimit, tooManyRequests } from '@/lib/api';
 import { resolveCallerUser } from '@/lib/wallets';
-import { activeProvider, fiatEnabled } from '@/lib/fiat/provider';
+import { cardAvailability, cardProvider, liveCapabilities, payoutAvailability } from '@/lib/fiat/registry';
 import { getRate } from '@/lib/fiat/rates';
+import { corridorKey, METHOD_LABELS } from '@/lib/fiat/corridors';
+import { summariseVerification } from '@/lib/fiat/subject';
 import {
   SUPPORTED_CURRENCIES,
   currencyMeta,
@@ -23,6 +25,11 @@ import {
  *    licensed provider is contracted. Until then this reports `available: false`
  *    with a reason, and the UI says so plainly rather than showing a button that
  *    cannot work.
+ *
+ * `payout.corridors` replaces the old `payout.currencies`. A currency was never
+ * enough to describe a payout: Nigeria by bank and Nigeria by mobile money are
+ * separate claims, each of which has to be exercised against a live API before
+ * it can be advertised.
  */
 
 export const maxDuration = 20;
@@ -42,7 +49,8 @@ export async function GET(req: NextRequest) {
         : (user?.preferredCurrency ?? 'USD');
 
     const rate = await getRate(currency);
-    const provider = activeProvider();
+    const payout = payoutAvailability();
+    const card = cardAvailability();
 
     return ok({
       // Indicative FX. Present regardless of whether payouts are live, because
@@ -62,21 +70,27 @@ export async function GET(req: NextRequest) {
       preferredCurrency: currency,
 
       payout: {
-        available: fiatEnabled(),
-        // A real reason, not a shrug. This is the state of the product, and
-        // saying so is better than an unexplained disabled button.
-        reason: fiatEnabled()
-          ? undefined
-          : 'Cashing out to a bank account needs a licensed payout partner. We are working on it.',
-        currencies: provider?.payoutCurrencies ?? [],
+        ...payout,
+        // Empty until a corridor has actually been paid on. Listing one we have
+        // only read about in a coverage map is the same class of lie as a
+        // disabled button that looks enabled.
+        corridors: liveCapabilities().map((c) => ({
+          key: corridorKey(c.corridor),
+          country: c.corridor.country,
+          currency: c.corridor.currency,
+          method: c.corridor.method,
+          methodLabel: METHOD_LABELS[c.corridor.method],
+          minMinor: c.limits.minMinor,
+          maxMinor: c.limits.maxMinor,
+          requires: c.requires,
+          // A range, never a promise.
+          etaHours: c.etaHours,
+        })),
       },
 
       card: {
-        available: fiatEnabled() && Boolean(provider?.supportsCards),
-        reason:
-          fiatEnabled() && provider?.supportsCards
-            ? undefined
-            : 'Cards need a licensed issuer. We are working on it.',
+        ...card,
+        brand: cardProvider()?.brand ?? null,
         // Card state is only ever a reference plus a status; the app never holds
         // a card number.
         current: user?.card
@@ -89,8 +103,13 @@ export async function GET(req: NextRequest) {
       },
 
       verification: {
-        status: user?.verification?.status ?? 'unstarted',
+        // Per-provider records are the truth; the legacy single field is the
+        // fallback for documents written before they existed.
+        status: user?.verifications?.length
+          ? summariseVerification(user.verifications)
+          : (user?.verification?.status ?? 'unstarted'),
         reason: user?.verification?.reason,
+        payoutCountry: user?.payoutCountry ?? null,
         // Why this exists at all, in the response, so the UI never has to invent
         // an explanation for asking.
         requiredFor: ['payout', 'card'],
@@ -105,8 +124,8 @@ export async function GET(req: NextRequest) {
  * Convert a USD amount to the indicative local equivalent.
  *
  * Explicitly not a quote. When a provider is live, a binding quote comes from
- * `provider.quotePayout`, carries an id and an expiry, and is what the payout
- * is executed against.
+ * `PayoutProvider.quote`, carries an id and an expiry, and is what the payout is
+ * executed against.
  */
 export async function POST(req: NextRequest) {
   try {
