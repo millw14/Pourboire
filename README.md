@@ -253,8 +253,6 @@ Idle polling is free: a search returning no new mentions returns no billable res
 - **Rate limiting is per-instance.** `src/lib/api.ts` blunts casual abuse and runaway retry
   loops, but on serverless it is not a global limiter. Put a real one at the edge before any
   volume.
-- **`programs/soltip` is not deployed or used.** It has a placeholder program id and the escrow
-  PDA cannot release USDG as written. Treat it as a sketch, not a component.
 - **The server holds custodial keys.** Moving unclaimed tips into an on-chain escrow would remove
   the largest risk in the system; that work has not been done.
 
