@@ -6,8 +6,8 @@ import { resolveCallerUser } from '@/lib/wallets';
 import { decryptPrivateKey } from '@/lib/crypto';
 import { explorerTxUrl, isAddress, nativeBalance, tokenBalance, estimateFeeWei } from '@/lib/chain';
 import { findTokenBySymbol, formatAmount, toBaseUnits, type TokenInfo } from '@/lib/tokens';
-import { executeSwap, quoteSwap } from '@/lib/swap/router';
-import { SwapQuoteError } from '@/lib/swap/quote';
+import { executeSwap, quoteSwap, PoolLookupError } from '@/lib/swap/router';
+import { SwapQuoteError, bindToAcceptedFloor } from '@/lib/swap/quote';
 import type { Address, Hex } from 'viem';
 
 /**
@@ -29,11 +29,27 @@ export const maxDuration = 60;
 const DEFAULT_SLIPPAGE_BPS = 50;
 const MAX_SLIPPAGE_BPS = 500;
 
+/**
+ * Confirmation waits, budgeted to finish inside `maxDuration`.
+ *
+ * 15 + 20 = 35s leaves 25s for pool discovery, balance reads, signing and the
+ * response. The platform killing this invocation mid-wait is worse than giving
+ * up early: an early return still carries the transaction hash, while a 504
+ * carries nothing and reads to the client as "try again".
+ */
+const APPROVE_CONFIRM_MS = 15_000;
+const SWAP_CONFIRM_MS = 20_000;
+
 interface Parsed {
   from: TokenInfo;
   to: TokenInfo;
   amountIn: bigint;
   slippageBps: number;
+  /**
+   * The floor the user actually saw and approved, in base units of `to`.
+   * Null when the caller never previewed.
+   */
+  acceptedMinimumOut: bigint | null;
 }
 
 function parseBody(body: Record<string, unknown>): Parsed {
@@ -62,7 +78,21 @@ function parseBody(body: Record<string, unknown>): Parsed {
     `Slippage must be between 0.01% and ${MAX_SLIPPAGE_BPS / 100}%`
   );
 
-  return { from, to, amountIn, slippageBps: requested };
+  // Echoed back from the preview so the price the user approved can be held
+  // against the one about to execute. A client that omits it gets no such
+  // protection, which is why the dialog always sends it.
+  let acceptedMinimumOut: bigint | null = null;
+  const accepted = body.acceptedMinimumOut;
+  if (accepted !== undefined && accepted !== null && String(accepted) !== '') {
+    try {
+      acceptedMinimumOut = BigInt(String(accepted));
+    } catch {
+      check(false, 'Could not read the quote you approved — re-open the swap');
+    }
+    check(acceptedMinimumOut === null || acceptedMinimumOut > 0n, 'That quote is no longer valid');
+  }
+
+  return { from, to, amountIn, slippageBps: requested, acceptedMinimumOut };
 }
 
 export async function POST(req: NextRequest) {
@@ -71,9 +101,13 @@ export async function POST(req: NextRequest) {
     const preview = Boolean((await req.clone().json().catch(() => ({}))).preview);
 
     // Quoting is cheap and read-only; executing moves money. Different budgets.
-    if (!rateLimit(`swap:${caller.privyUserId}`, preview ? 60 : 5, 60_000)) {
-      return tooManyRequests();
-    }
+    // Separate KEYS, not just separate limits. One shared counter meant six
+    // previews — which the dialog fires on every keystroke — filled the execute
+    // budget, and a user who had done nothing but type was told to slow down.
+    const allowed = preview
+      ? rateLimit(`swap:preview:${caller.privyUserId}`, 60, 60_000)
+      : rateLimit(`swap:exec:${caller.privyUserId}`, 5, 60_000);
+    if (!allowed) return tooManyRequests();
 
     await connectDB();
     const user = await resolveCallerUser(caller);
@@ -105,6 +139,16 @@ export async function POST(req: NextRequest) {
       });
     } catch (e) {
       if (e instanceof SwapQuoteError) return fail(400, e.message, 'unquotable');
+      if (e instanceof PoolLookupError) {
+        // A network problem, not a fact about the pair. Retryable, and said so —
+        // the alternative is quoting from whichever fee tiers happened to answer,
+        // which can route a trade into a pool a hundred times shallower.
+        return fail(
+          503,
+          'We could not read every pool for that pair just now. Try again in a moment.',
+          'pool_lookup_failed'
+        );
+      }
       throw e;
     }
 
@@ -134,6 +178,9 @@ export async function POST(req: NextRequest) {
       // promises and only one of them is binding.
       estimatedOut: formatAmount(result.quote.amountOut, parsed.to),
       minimumOut: formatAmount(result.quote.amountOutMinimum, parsed.to),
+      // The same floor in base units, for the client to hand back on execute.
+      // Formatted output is rounded for display and cannot be compared exactly.
+      minimumOutBase: result.quote.amountOutMinimum.toString(),
       slippageBps: result.quote.slippageBps,
       feePips: result.pool.fee,
       poolShareBps: result.quote.poolShareBps,
@@ -141,6 +188,18 @@ export async function POST(req: NextRequest) {
 
     if (preview) {
       return ok({ quote: quoted });
+    }
+
+    // The price the user read may no longer be available. Refusing here — and
+    // handing back the new numbers — is the difference between a user choosing
+    // a worse price and being given one.
+    const binding = bindToAcceptedFloor(parsed.acceptedMinimumOut, result.quote.amountOutMinimum);
+    if (!binding.ok) {
+      return fail(
+        409,
+        `The price moved ${(binding.shortfallBps / 100).toFixed(2)}% against you since you were quoted. Check the new price and try again.`,
+        'price_moved'
+      );
     }
 
     // Gas is ETH regardless of which tokens move, and a swap is two transactions.
@@ -165,13 +224,20 @@ export async function POST(req: NextRequest) {
       tokenOut: parsed.to,
       pool: result.pool,
       quote: result.quote,
+      // Budgeted against `maxDuration` above. Two default 30s waits plus pool
+      // discovery could overrun 60s, and being killed mid-wait loses the hash —
+      // the platform then returns a bodyless 504 that the client reads as a
+      // generic failure and offers to retry, for a swap already in flight.
+      approveTimeoutMs: APPROVE_CONFIRM_MS,
+      swapTimeoutMs: SWAP_CONFIRM_MS,
     });
 
     const { step, outcome } = swap;
 
-    if (outcome.status === 'rejected' || outcome.status === 'failed') {
-      // Nothing moved, and we know it. A reverted swap usually means the price
-      // moved past the floor, which is the guard working.
+    if (outcome.status === 'failed') {
+      // It reached a block and reverted, so nothing moved and we know it. On the
+      // swap step that usually means the price crossed the floor — the guard
+      // working, not a fault.
       return fail(
         502,
         step === 'approve'
@@ -181,13 +247,35 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (outcome.status === 'unknown') {
-      console.error('[swap] indeterminate submission', step, outcome.reason);
+    if (outcome.status === 'rejected') {
+      // Refused before entering the mempool. Also nothing moved, but the causes
+      // are different enough to be worth their own message.
       return fail(
         502,
-        'We lost contact with the network while sending. Check your balance before trying again — it may still have gone through.',
-        'swap_indeterminate'
+        step === 'approve'
+          ? 'The network refused the approval. Nothing was swapped.'
+          : 'The network refused the swap. Nothing was swapped.',
+        'swap_rejected'
       );
+    }
+
+    if (outcome.status === 'unknown') {
+      // Deliberately a 200, not a 5xx. A 5xx is what makes clients retry, and a
+      // retry is exactly what must not happen when the transaction may be live.
+      // Same rule the payout route follows, for the same reason.
+      console.error(
+        '[swap] indeterminate submission',
+        JSON.stringify({ step, owner, from: parsed.from.symbol, to: parsed.to.symbol, amount: quoted.amountIn, reason: outcome.reason })
+      );
+      return ok({
+        status: 'indeterminate',
+        step,
+        retryable: false,
+        message:
+          step === 'approve'
+            ? 'We lost contact with the network while approving. Nothing was swapped, but do not try again yet — check your recent activity on the explorer first.'
+            : 'We lost contact with the network while sending your swap. Do not try again — it may have gone through. Check your recent activity on the explorer.',
+      });
     }
 
     if (step === 'approve') {
@@ -196,6 +284,7 @@ export async function POST(req: NextRequest) {
         status: 'pending_approval',
         txHash: outcome.hash,
         explorerUrl: explorerTxUrl(outcome.hash),
+        retryable: false,
         message: 'The approval is still confirming. Try the swap again in a moment.',
       });
     }
@@ -204,7 +293,11 @@ export async function POST(req: NextRequest) {
       status: outcome.status,
       txHash: outcome.hash,
       explorerUrl: explorerTxUrl(outcome.hash),
+      // The quote that actually executed, not the one previewed. The dialog used
+      // to report the preview's floor in the past tense — "at least X was
+      // guaranteed" — which could name a number larger than what was received.
       quote: quoted,
+      retryable: false,
       message:
         outcome.status === 'unconfirmed'
           ? 'Sent, but not confirmed yet. Track it on the explorer — do not send again.'

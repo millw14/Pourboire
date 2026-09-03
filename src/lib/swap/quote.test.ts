@@ -5,6 +5,8 @@ import {
   quoteExactInput,
   isQuoteReliable,
   SwapQuoteError,
+  inputBalanceOf,
+  bindToAcceptedFloor,
   PRICE_SCALE,
   type PoolState,
 } from './quote.ts';
@@ -178,4 +180,101 @@ test('never returns a floating point number for an amount', () => {
   for (const v of [q.amountIn, q.amountOut, q.amountOutMinimum]) {
     assert.equal(typeof v, 'bigint');
   }
+});
+
+/* --------------------------------------------------- pool selection depth */
+
+test('the input balance is the pool side being sold, in both directions', () => {
+  // Pool selection used to compute this separately and applied the caller's
+  // token ordering a second time, so selling the pool's token1 ranked pools by
+  // the depth of the token being BOUGHT. With NVDA/USDG that meant a shallow
+  // NVDA pool holding lots of USDG could outrank the deep one.
+  assert.equal(inputBalanceOf(NVDA_USDG, true), NVDA_USDG.token0Balance);
+  assert.equal(inputBalanceOf(NVDA_USDG, false), NVDA_USDG.token1Balance);
+});
+
+test('pool share is measured against the token being sold', () => {
+  // Both sides are base units of the same token, so this is a real ratio. Using
+  // the other side's balance would compare 6dp to 18dp and read as ~0 bps.
+  const sellingUsdg = quoteExactInput({
+    state: NVDA_USDG,
+    amountIn: 46_696_984_330n, // exactly 1% of the pool's USDG
+    zeroForOne: true,
+    slippageBps: 50,
+  });
+  assert.equal(sellingUsdg.poolShareBps, 100);
+
+  const sellingNvda = quoteExactInput({
+    state: NVDA_USDG,
+    amountIn: 62_968_930_000_000_000_000n, // exactly 1% of the pool's NVDA
+    zeroForOne: false,
+    slippageBps: 50,
+  });
+  assert.equal(sellingNvda.poolShareBps, 100);
+});
+
+/* ----------------------------------------------- the floor is never zero */
+
+test('a trade too small to carry a floor is refused, not sent unguarded', () => {
+  // amountOutMinimum is the only on-chain protection a swap has. When slippage
+  // rounds it to zero the router would accept any output at all, including one
+  // wei — so this must refuse rather than execute.
+  assert.throws(
+    () =>
+      quoteExactInput({
+        state: { ...NVDA_USDG, token1Decimals: 6 },
+        amountIn: 1n,
+        zeroForOne: false,
+        slippageBps: 5_000,
+      }),
+    SwapQuoteError
+  );
+});
+
+/* ------------------------------------------- binding the approved price */
+
+test('a better price than the one approved goes straight through', () => {
+  const decision = bindToAcceptedFloor(100n, 120n);
+  assert.ok(decision.ok);
+  // The higher floor is used, not the accepted one — there is no reason to give
+  // someone less protection than the market is currently offering.
+  assert.equal(decision.floor, 120n);
+});
+
+test('exactly the approved price is accepted', () => {
+  const decision = bindToAcceptedFloor(100n, 100n);
+  assert.ok(decision.ok);
+  assert.equal(decision.floor, 100n);
+});
+
+test('a worse price is refused, with the shortfall measured', () => {
+  // This is the window that actually matters: between the number the person read
+  // and the number the transaction carries. Without it, amountOutMinimum only
+  // guards the milliseconds between the server's own quote and inclusion.
+  const decision = bindToAcceptedFloor(100n, 90n);
+  assert.ok(!decision.ok);
+  assert.equal(decision.shortfallBps, 1_000); // 10%
+});
+
+test('a one-unit shortfall is still a refusal', () => {
+  // No tolerance band. The user approved a number; anything below it is a
+  // different trade, and they should get to look at it.
+  const decision = bindToAcceptedFloor(1_000_000n, 999_999n);
+  assert.ok(!decision.ok);
+});
+
+test('an API caller that never previewed is not blocked', () => {
+  // Nothing was approved, so there is nothing to hold the quote to. The slippage
+  // limit is still enforced by the quote itself.
+  const decision = bindToAcceptedFloor(null, 90n);
+  assert.ok(decision.ok);
+  assert.equal(decision.floor, 90n);
+});
+
+test('a zero or negative accepted floor cannot be used to disable the check', () => {
+  // Passing 0 must not read as "I accept anything" in a way that is different
+  // from not passing it at all.
+  const zero = bindToAcceptedFloor(0n, 5n);
+  assert.ok(zero.ok);
+  assert.equal(zero.floor, 5n);
 });

@@ -22,6 +22,9 @@ interface SwapQuote {
   amountIn: string;
   estimatedOut: string;
   minimumOut: string;
+  /** The same floor in base units — echoed back on execute so the price the
+   *  user approved is held against the one that runs. */
+  minimumOutBase: string;
   slippageBps: number;
   feePips: number;
   poolShareBps: number;
@@ -34,9 +37,14 @@ interface QuoteResponse {
 
 interface SwapResponse {
   success: true;
-  status: 'confirmed' | 'unconfirmed' | 'pending_approval';
-  txHash: string;
-  explorerUrl: string;
+  status: 'confirmed' | 'unconfirmed' | 'pending_approval' | 'indeterminate';
+  /** Absent when the transaction never got far enough to have one. */
+  txHash?: string;
+  explorerUrl?: string;
+  /** The quote that ACTUALLY executed, which is not always the one previewed. */
+  quote?: SwapQuote;
+  step?: 'approve' | 'swap';
+  retryable?: boolean;
   message?: string;
 }
 
@@ -49,6 +57,11 @@ interface Props {
   onSwapped: () => void;
 }
 
+/** Only offer an explorer link when there is actually a transaction to look at. */
+function explorerAction(res: SwapResponse) {
+  return res.explorerUrl ? { label: 'View on explorer', href: res.explorerUrl } : undefined;
+}
+
 export function SwapDialog({ onClose, balances, onSwapped }: Props) {
   const api = useApi();
   const { toast } = useToast();
@@ -57,6 +70,9 @@ export function SwapDialog({ onClose, balances, onSwapped }: Props) {
   const [from, setFrom] = useState(sellable[0]?.symbol ?? 'USDG');
   const [to, setTo] = useState(() => (sellable[0]?.symbol === 'NVDA' ? 'USDG' : 'NVDA'));
   const [amount, setAmount] = useState('');
+  // Latched the moment anything is broadcast, and never cleared. A swap that may
+  // be in flight must not be offered again from the same modal.
+  const [spent, setSpent] = useState(false);
   // The quote is stored with the exact inputs that produced it, so staleness is
   // an equality check rather than a guess. Matching on the formatted amount by
   // prefix looked fine and was wrong: "100 USDG" starts with "10", so typing a
@@ -120,51 +136,82 @@ export function SwapDialog({ onClose, balances, onSwapped }: Props) {
   const liveQuote = quotable && quote?.for === quoteKey ? quote.value : null;
 
   const submit = async () => {
-    if (!liveQuote || submitting) return;
+    if (!liveQuote || submitting || spent) return;
     setSubmitting(true);
     try {
       const res = await api<SwapResponse>('/api/swap', {
         method: 'POST',
-        body: JSON.stringify({ from, to, amount }),
+        body: JSON.stringify({
+          from,
+          to,
+          amount,
+          // The floor the user is looking at as they press the button. The
+          // server refuses rather than filling below it.
+          acceptedMinimumOut: liveQuote.minimumOutBase,
+        }),
       });
 
-      if (res.status === 'pending_approval') {
+      if (res.status === 'indeterminate') {
+        // The transaction may be live. Nothing about this screen may invite
+        // another attempt, so the button is retired for the life of the modal
+        // and this is a pending state, not a failure.
+        setSpent(true);
+        toast({
+          tone: 'pending',
+          title: 'We are not sure whether that went through',
+          description: res.message,
+        });
+      } else if (res.status === 'pending_approval') {
         toast({
           tone: 'pending',
           title: 'Approval still confirming',
           description: res.message,
-          action: { label: 'View on explorer', href: res.explorerUrl },
+          action: explorerAction(res),
         });
       } else if (res.status === 'unconfirmed') {
+        setSpent(true);
         toast({
           tone: 'pending',
           title: 'Swap sent, not confirmed yet',
           description: res.message,
-          action: { label: 'View on explorer', href: res.explorerUrl },
+          action: explorerAction(res),
         });
       } else {
+        // Report what executed, not what was previewed. The two can differ, and
+        // naming the preview's floor in the past tense could tell someone they
+        // were guaranteed more than they actually received.
+        const executed = res.quote ?? liveQuote;
+        setSpent(true);
         toast({
           tone: 'success',
-          title: `Swapped ${liveQuote.amountIn} for ${to}`,
-          description: `At least ${liveQuote.minimumOut} was guaranteed.`,
-          action: { label: 'View on explorer', href: res.explorerUrl },
+          title: `Swapped ${executed.amountIn} for ${to}`,
+          description: `At least ${executed.minimumOut} was guaranteed.`,
+          action: explorerAction(res),
         });
       }
 
       onSwapped();
       onClose();
     } catch (e) {
+      const priceMoved = e instanceof ApiError && e.code === 'price_moved';
       toast({
-        tone: 'error',
-        title: 'Swap failed',
+        tone: priceMoved ? 'pending' : 'error',
+        title: priceMoved ? 'The price moved' : 'Swap failed',
         description: e instanceof ApiError ? e.message : 'Something went wrong. Please try again.',
       });
+      if (priceMoved) {
+        // Force a fresh quote rather than leaving the old number on screen for
+        // them to press again.
+        setQuote(null);
+      }
     } finally {
       setSubmitting(false);
     }
   };
 
-  const canSubmit = Boolean(liveQuote) && !quoting && !submitting;
+  // Once anything has been broadcast, this modal must never offer to do it
+  // again — including on the paths where we do not know what happened.
+  const canSubmit = Boolean(liveQuote) && !quoting && !submitting && !spent;
 
   return (
     <Modal

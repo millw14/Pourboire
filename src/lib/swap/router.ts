@@ -1,8 +1,14 @@
 import 'server-only';
 import { encodeFunctionData, parseAbi, type Address, type Hex } from 'viem';
-import { getPublicClient, sendCall, isAddress, type TransferOutcome } from '../chain';
-import { isNative, type TokenInfo } from '../tokens';
-import { quoteExactInput, isQuoteReliable, type PoolState, type Quote } from './quote';
+import { getPublicClient, sendCall, isAddress, type TransferOutcome } from '../chain.ts';
+import { isNative, type TokenInfo } from '../tokens.ts';
+import {
+  quoteExactInput,
+  isQuoteReliable,
+  inputBalanceOf,
+  type PoolState,
+  type Quote,
+} from './quote.ts';
 
 /**
  * Swapping on Robinhood Chain, via Uniswap V3.
@@ -57,6 +63,23 @@ const ROUTER_ABI = parseAbi([
 const APPROVE_GAS = 80_000n;
 const SWAP_GAS = 400_000n;
 
+/**
+ * A pool read that failed for reasons unrelated to the pair.
+ *
+ * Kept distinct from "there is no such pool", because the two have opposite
+ * answers: no pool is a permanent fact about the pair, and a failed read is a
+ * temporary fact about the network. Collapsing them is how a transient RPC error
+ * becomes "we do not support that pair" — or, worse, a quote drawn from whatever
+ * subset of fee tiers happened to answer.
+ *
+ * This is not hypothetical. Verifying the swap path against live mainnet, one
+ * run selected the 0.3% NVDA/USDG pool holding 50 NVDA over the 0.05% pool
+ * holding 5,946 — a hundredfold difference in depth — because a read for the
+ * deeper tier failed and was silently dropped. The quote that came back looked
+ * perfectly ordinary.
+ */
+export class PoolLookupError extends Error {}
+
 export interface ResolvedPool {
   address: Address;
   fee: number;
@@ -84,8 +107,10 @@ export async function resolvePool(
   const b = tokenOut.address!;
   const client = getPublicClient();
 
-  const candidates = await Promise.all(
-    FEE_TIERS.map(async (fee) => {
+  // `null` means this tier has no pool — a fact about the pair. `undefined`
+  // means the read failed and we do not know, which is a fact about the network
+  // and must not be treated as an answer.
+  const readTier = async (fee: number) => {
       try {
         const pool = (await client.readContract({
           address: V3_FACTORY,
@@ -117,28 +142,55 @@ export async function resolvePool(
         const sqrtPriceX96 = (slot0 as readonly unknown[])[0] as bigint;
         if (sqrtPriceX96 <= 0n) return null;
 
+        // token0/token1 ordering is the pool's, not the caller's. `bal0` and
+        // `bal1` are named after the *caller's* ordering — bal0 is always the
+        // pool's balance of the token being sold — so this mapping is where the
+        // two orderings are reconciled, and it must happen exactly once.
+        const state = {
+          sqrtPriceX96,
+          token0Balance: zeroForOne ? (bal0 as bigint) : (bal1 as bigint),
+          token1Balance: zeroForOne ? (bal1 as bigint) : (bal0 as bigint),
+          feePips: Number(poolFee),
+          token0Decimals: zeroForOne ? tokenIn.decimals : tokenOut.decimals,
+          token1Decimals: zeroForOne ? tokenOut.decimals : tokenIn.decimals,
+        } satisfies PoolState;
+
         return {
           address: pool,
           fee: Number(poolFee),
           zeroForOne,
-          // token0/token1 ordering is the pool's, not the caller's.
-          state: {
-            sqrtPriceX96,
-            token0Balance: zeroForOne ? (bal0 as bigint) : (bal1 as bigint),
-            token1Balance: zeroForOne ? (bal1 as bigint) : (bal0 as bigint),
-            feePips: Number(poolFee),
-            token0Decimals: zeroForOne ? tokenIn.decimals : tokenOut.decimals,
-            token1Decimals: zeroForOne ? tokenOut.decimals : tokenIn.decimals,
-          } satisfies PoolState,
-          inputDepth: zeroForOne ? (bal0 as bigint) : (bal1 as bigint),
+          state,
+          // Read through the same helper the quote uses, so ranking and pricing
+          // cannot disagree about which balance is the input side. They used to
+          // compute it separately, and this copy had the caller's ordering
+          // applied a second time — which ranked pools by the depth of the token
+          // being *bought* whenever the sold token was the pool's token1.
+          inputDepth: inputBalanceOf(state, zeroForOne),
         };
       } catch {
-        return null;
+        return undefined;
       }
-    })
-  );
+  };
 
-  const live = candidates.filter((c): c is NonNullable<typeof c> => c !== null);
+  let candidates = await Promise.all(FEE_TIERS.map(readTier));
+
+  // One retry for the tiers that errored. Most of these are a single dropped
+  // request, and retrying just those is cheaper than refusing the whole quote.
+  const failed = FEE_TIERS.filter((_, i) => candidates[i] === undefined);
+  if (failed.length > 0) {
+    const retried = await Promise.all(failed.map(readTier));
+    let next = 0;
+    candidates = candidates.map((c) => (c === undefined ? retried[next++] : c));
+  }
+
+  if (candidates.some((c) => c === undefined)) {
+    // Deliberately refuse rather than pick the best of what answered. Selection
+    // is a comparison, and a comparison over an unknown subset is not a
+    // comparison — it is a coin toss that can hand someone the shallow pool.
+    throw new PoolLookupError('Could not read every pool for that pair');
+  }
+
+  const live = candidates.filter((c): c is NonNullable<typeof c> => Boolean(c));
   if (live.length === 0) return null;
 
   live.sort((x, y) => (y.inputDepth > x.inputDepth ? 1 : y.inputDepth < x.inputDepth ? -1 : 0));
@@ -189,7 +241,13 @@ export async function executeSwap(params: {
   tokenOut: TokenInfo;
   pool: ResolvedPool;
   quote: Quote;
-  deadlineSeconds?: number;
+  /**
+   * Per-leg confirmation waits. The caller budgets these against its own
+   * platform timeout — being killed mid-wait loses the transaction hash, which
+   * is the one thing that makes an in-flight swap recoverable.
+   */
+  approveTimeoutMs?: number;
+  swapTimeoutMs?: number;
 }): Promise<SwapOutcome> {
   const tokenIn = params.tokenIn.address!;
   const client = getPublicClient();
@@ -214,6 +272,7 @@ export async function executeSwap(params: {
         args: [SWAP_ROUTER, params.quote.amountIn],
       }),
       gas: APPROVE_GAS,
+      confirmTimeoutMs: params.approveTimeoutMs,
     });
     if (approveOutcome.status !== 'confirmed') {
       return { step: 'approve', outcome: approveOutcome };
@@ -241,6 +300,7 @@ export async function executeSwap(params: {
       ],
     }),
     gas: SWAP_GAS,
+    confirmTimeoutMs: params.swapTimeoutMs,
   });
 
   return { step: 'swap', outcome: swapOutcome };

@@ -8,6 +8,7 @@ import PayoutDestination from '@/models/PayoutDestination';
 import { resolvePayoutContext } from '@/lib/fiat/context';
 import { corridorKey } from '@/lib/fiat/corridors';
 import { ProviderError } from '@/lib/fiat/types';
+import { isNeverSettlement } from '@/lib/fiat/settlement-token';
 import { parseTokenAmount, resolveToken } from '@/lib/settle';
 
 /**
@@ -51,6 +52,20 @@ export async function POST(req: NextRequest) {
       token = await resolveToken(String(body.token ?? 'USDG'));
     } catch {
       return fail(400, "I don't recognise that token", 'unknown_token');
+    }
+
+    // The token to spend arrives in the request body, so without this a client
+    // could point "cash out" at an equity. The corridor's rail is not known
+    // until routing, so this catches only the categories that are wrong whatever
+    // the destination — the byte-exact check runs again at the funding step.
+    if (isNeverSettlement(token.info.kind)) {
+      return fail(
+        400,
+        token.info.kind === 'equity'
+          ? `We will not sell your ${token.info.symbol} to cash out. Swap it yourself first if that is what you want.`
+          : `${token.info.symbol} cannot be cashed out.`,
+        'not_settlement_token'
+      );
     }
 
     const parsed = parseTokenAmount(String(body.amount ?? ''), token);

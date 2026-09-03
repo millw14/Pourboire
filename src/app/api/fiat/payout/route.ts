@@ -86,6 +86,8 @@ export async function POST(req: NextRequest) {
       privateKey,
       depositAddress: depositAddress as Address,
       token: (tokenInfo.address as Address | null) ?? null,
+      tokenInfo,
+      rail: context.capability.rail,
     });
 
     if (funding.status !== 'funding') {

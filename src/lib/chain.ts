@@ -12,7 +12,7 @@ import {
   type PublicClient,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { cluster, rpcUrl } from './env';
+import { cluster, rpcUrl } from './env.ts';
 
 /**
  * Everything that talks to Robinhood Chain.
@@ -128,13 +128,28 @@ function isDefiniteRejection(message: string): boolean {
   const m = message.toLowerCase();
   return (
     m.includes('insufficient funds') ||
+    // Another transaction consumed our nonce, so ours can never be included.
     m.includes('nonce too low') ||
-    m.includes('already known') ||
+    // A *different* transaction holds our nonce and outbids us. Ours is refused.
     m.includes('replacement transaction underpriced') ||
     m.includes('intrinsic gas too low') ||
     m.includes('exceeds block gas limit')
   );
 }
+
+/**
+ * `already known` is deliberately NOT in the list above.
+ *
+ * It means the node already holds a transaction with these exact bytes — which
+ * is to say ours is in the mempool and will land. Calling that a definite
+ * rejection tells the caller "nothing moved, safe to retry" at the one moment
+ * when money is in flight, which is precisely the double-send this type exists
+ * to prevent. It falls through to `unknown`, whose contract is "must not retry".
+ *
+ * On a deliberate rebroadcast of stored bytes it means the opposite — success —
+ * and `classifyBroadcast` in the fiat layer handles that case explicitly,
+ * before it ever consults this function.
+ */
 
 /** How long to wait for a receipt. Blocks are ~100ms, so this is generous. */
 const CONFIRM_TIMEOUT_MS = 30_000;
@@ -157,7 +172,8 @@ const CONFIRM_TIMEOUT_MS = 30_000;
  */
 async function sendAndConfirm(
   privateKey: Hex,
-  request: { to: Address; data?: Hex; value?: bigint; gas: bigint }
+  request: { to: Address; data?: Hex; value?: bigint; gas: bigint },
+  confirmTimeoutMs: number = CONFIRM_TIMEOUT_MS
 ): Promise<TransferOutcome> {
   const account = privateKeyToAccount(privateKey);
   const wallet = createWalletClient({ account, chain: activeChain(), transport: http(rpcUrl()) });
@@ -175,7 +191,7 @@ async function sendAndConfirm(
   }
 
   try {
-    const receipt = await pub.waitForTransactionReceipt({ hash, timeout: CONFIRM_TIMEOUT_MS });
+    const receipt = await pub.waitForTransactionReceipt({ hash, timeout: confirmTimeoutMs });
     if (receipt.status !== 'success') {
       return { status: 'failed', hash, reason: 'reverted' };
     }
@@ -231,13 +247,25 @@ export async function sendCall(params: {
   data: Hex;
   gas: bigint;
   value?: bigint;
+  /**
+   * How long to wait for a receipt before returning `unconfirmed`.
+   *
+   * Exposed because a caller running under a platform timeout has to finish
+   * first. Being killed mid-wait loses the hash and turns a recoverable
+   * `unconfirmed` into a generic 504 that invites a retry.
+   */
+  confirmTimeoutMs?: number;
 }): Promise<TransferOutcome> {
-  return sendAndConfirm(params.privateKey, {
-    to: params.to,
-    data: params.data,
-    gas: params.gas,
-    ...(params.value !== undefined ? { value: params.value } : {}),
-  });
+  return sendAndConfirm(
+    params.privateKey,
+    {
+      to: params.to,
+      data: params.data,
+      gas: params.gas,
+      ...(params.value !== undefined ? { value: params.value } : {}),
+    },
+    params.confirmTimeoutMs
+  );
 }
 
 /** Native ETH balance. */

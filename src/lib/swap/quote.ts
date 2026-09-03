@@ -50,6 +50,18 @@ export function priceToken1PerToken0(state: PoolState): bigint {
   return (rawScaled * 10n ** BigInt(token0Decimals)) / 10n ** BigInt(token1Decimals);
 }
 
+/**
+ * The pool's balance of the token being sold.
+ *
+ * Exported so pool *selection* and pool *pricing* read the same quantity. They
+ * used to compute it separately, and the selection copy was conditioned on the
+ * caller's token ordering rather than the pool's — so when the sold token was
+ * the pool's token1, pools were ranked by the depth of the token being bought.
+ */
+export function inputBalanceOf(state: PoolState, zeroForOne: boolean): bigint {
+  return zeroForOne ? state.token0Balance : state.token1Balance;
+}
+
 export interface QuoteInput {
   state: PoolState;
   /** Base units of the token being sold. */
@@ -98,7 +110,7 @@ export function quoteExactInput(input: QuoteInput): Quote {
   if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 5_000) {
     throw new SwapQuoteError('Slippage tolerance must be between 0.01% and 50%');
   }
-  const inputBalance = zeroForOne ? state.token0Balance : state.token1Balance;
+  const inputBalance = inputBalanceOf(state, zeroForOne);
   if (inputBalance <= 0n) throw new SwapQuoteError('That pool has no liquidity');
   if (state.sqrtPriceX96 <= 0n) throw new SwapQuoteError('That pool has no price');
 
@@ -121,6 +133,13 @@ export function quoteExactInput(input: QuoteInput): Quote {
   }
 
   const amountOutMinimum = (amountOut * BigInt(10_000 - slippageBps)) / 10_000n;
+  if (amountOutMinimum <= 0n) {
+    // The floor is the only on-chain protection a swap carries. When the output
+    // is small enough that applying slippage rounds the floor to zero, the trade
+    // would execute with no protection at all — the router would accept any
+    // output, including one wei. Refuse rather than send an unguarded swap.
+    throw new SwapQuoteError('That amount is too small to swap safely — try a larger amount');
+  }
 
   return {
     amountIn,
@@ -148,4 +167,37 @@ export const MAX_POOL_SHARE_BPS = 100; // 1%
 
 export function isQuoteReliable(quote: Quote): boolean {
   return quote.poolShareBps <= MAX_POOL_SHARE_BPS;
+}
+
+/**
+ * Bind the floor a user actually approved to the one about to be sent on chain.
+ *
+ * The dialog quotes, the user reads a number, and some time later they press
+ * Swap — at which point the server quotes again and, without this, sends
+ * whatever floor the *new* quote produced. `amountOutMinimum` then protects
+ * against movement between the server's own quote and inclusion, a window of
+ * milliseconds, while leaving the window that actually matters — between what
+ * the person saw and what they got — completely unguarded.
+ *
+ * So the accepted floor becomes a floor on the floor. A better price is passed
+ * through (the fresh floor is higher, and there is no reason to give the user
+ * less protection than the market is offering); a worse one is refused and sent
+ * back for them to look at again.
+ */
+export type AcceptanceDecision =
+  | { ok: true; floor: bigint }
+  | { ok: false; shortfallBps: number };
+
+export function bindToAcceptedFloor(
+  accepted: bigint | null,
+  fresh: bigint
+): AcceptanceDecision {
+  // No accepted floor means an API caller that never previewed. The fresh quote
+  // is all there is, and it is still bounded by the slippage limit.
+  if (accepted === null) return { ok: true, floor: fresh };
+  if (accepted <= 0n) return { ok: true, floor: fresh };
+  if (fresh >= accepted) return { ok: true, floor: fresh };
+
+  const shortfall = ((accepted - fresh) * 10_000n) / accepted;
+  return { ok: false, shortfallBps: Number(shortfall) };
 }

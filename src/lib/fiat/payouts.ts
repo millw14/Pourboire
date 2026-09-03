@@ -7,6 +7,11 @@ import { classifyBroadcast } from './funding-policy.ts';
 import { reconcileFunding, reconcileSubmission } from './reconcile-policy.ts';
 import { ProviderError, type PayoutProvider } from './types.ts';
 import type { VerifiedSubject } from './subject.ts';
+import {
+  checkSettlementToken,
+  type SettlementCandidate,
+  type SettlementRailToken,
+} from './settlement-token.ts';
 
 /**
  * Driving a payout through its states.
@@ -64,8 +69,22 @@ export async function fundPayout(params: {
   privateKey: Hex;
   depositAddress: Address;
   token: Address | null;
+  /** What the token actually is, so an equity can be refused. */
+  tokenInfo: SettlementCandidate;
+  /** What the corridor declared it settles in. */
+  rail: SettlementRailToken;
 }): Promise<{ status: PayoutStatus; reason: string }> {
   const { payout } = params;
+
+  // The single choke point for every token the fiat layer moves. The route
+  // checks earlier and more cheaply, but this is the one that cannot be
+  // bypassed by a new caller — and it is the only place that knows the rail, so
+  // it is the only place the byte-exact comparison can be made.
+  const settlement = checkSettlementToken(params.tokenInfo, params.rail);
+  if (!settlement.ok) {
+    await transition(payout._id, 'quoted', 'cancelled', { note: settlement.message });
+    return { status: 'cancelled', reason: settlement.message };
+  }
 
   const signed = await signTransfer({
     privateKey: params.privateKey,
