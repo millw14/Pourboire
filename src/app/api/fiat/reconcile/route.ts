@@ -9,6 +9,7 @@ import { classifyConfirmation } from '@/lib/fiat/funding-policy';
 import { receiptStatus } from '@/lib/chain';
 import { payoutProvider } from '@/lib/fiat/registry';
 import { verifiedSubjectFor } from '@/lib/fiat/subject';
+import { reconcileSponsorships } from '@/lib/gas/reconcile';
 import type { Hex } from 'viem';
 
 /**
@@ -106,7 +107,13 @@ export async function POST(req: NextRequest) {
       resolved.push(`${String(payout._id)}:${result.status}`);
     }
 
-    return ok({ confirmed, submitted, resolved });
+    // 4. Gas grants whose outcome was never established. Same discipline:
+    //    a receipt or a consumed nonce settles it, and nothing is re-sent. A
+    //    frozen grant holds a per-user lock, so without this a single missed
+    //    receipt was a permanent, silent ban on being sponsored again.
+    const gas = await reconcileSponsorships(BATCH);
+
+    return ok({ confirmed, submitted, resolved, gas });
   } catch (e) {
     return handleError('fiat/reconcile', e);
   }

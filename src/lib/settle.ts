@@ -9,7 +9,6 @@ import {
   getPublicClient,
   isAddress,
   nativeBalance,
-  spendableWei,
   tokenBalance,
   transfer,
   type TransferOutcome,

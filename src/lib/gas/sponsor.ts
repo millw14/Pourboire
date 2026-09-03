@@ -8,6 +8,7 @@ import { sponsorAddress, sponsorConfigured, withSponsorKey } from './wallet.ts';
 import {
   DEFAULT_LIMITS,
   decideSponsorship,
+  ratchetOutstanding,
   weiToGweiCeil,
   type SponsorIntent,
   type SponsorRefusal,
@@ -38,12 +39,12 @@ export type SponsorResult =
   | { ok: true; granted: bigint }
   | { ok: false; reason: SponsorRefusal | 'in_flight' | 'send_failed'; message: string };
 
-function utcDay(at: Date): string {
+export function utcDay(at: Date): string {
   return at.toISOString().slice(0, 10);
 }
 
 /** Counters for this user, with the day rolled over if it is stale. */
-function counters(user: IUser, day: string) {
+export function counters(user: IUser, day: string) {
   const stored = user.gasSponsored;
   const sameDay = stored?.day === day;
   return {
@@ -77,8 +78,22 @@ export async function ensureGasFor(params: {
   const configured = sponsorConfigured();
   const sponsor = sponsorAddress();
 
-  const [balanceWei, gasPriceWei, sponsorBalanceWei, globalSpentGwei] = await Promise.all([
-    nativeBalance(wallet),
+  // The wallet's own balance answers most calls on its own, so it is read first
+  // and alone. A funded wallet costs one RPC call and never touches the rest of
+  // this — including when sponsorship is switched off entirely, where the
+  // earlier version read four balances to reach a conclusion it already had.
+  const balanceWei = await nativeBalance(wallet);
+  if (balanceWei >= requiredWei) return { ok: true, granted: 0n };
+
+  if (!configured) {
+    return {
+      ok: false,
+      reason: 'unconfigured',
+      message: 'Not enough ETH to cover gas. Top up a little ETH and try again.',
+    };
+  }
+
+  const [gasPriceWei, sponsorBalanceWei, globalSpentGwei] = await Promise.all([
     getPublicClient().getGasPrice(),
     sponsor ? nativeBalance(sponsor) : Promise.resolve(0n),
     GasBudget.findById(`gas:${day}`)
@@ -108,7 +123,7 @@ export async function ensureGasFor(params: {
   }
 
   const amountWei = decision.amountWei;
-  return grant({ user, intent, wallet, amountWei, gasPriceWei, day, now });
+  return grant({ user, intent, wallet, amountWei, gasPriceWei, balanceBeforeWei: balanceWei, day, now });
 }
 
 /**
@@ -117,16 +132,51 @@ export async function ensureGasFor(params: {
  * Split out so the decision above reads as a decision. Every early return here
  * unwinds exactly what it claimed and nothing more.
  */
-async function grant(params: {
+/**
+ * The lock the whole sequence hangs on.
+ *
+ * `grantInner` claims a row with `active: true`, and every step after that is an
+ * await that can throw — an RPC 502 inside `signTransfer` is enough. An escaping
+ * exception used to leave the row claimed forever with nothing anywhere that
+ * would clear it, so one bad second permanently banned that user from being
+ * sponsored again and left the budget charged for a grant that never happened.
+ *
+ * Every throw here happens BEFORE the broadcast or in the same breath as it, so
+ * unwinding is safe: the only paths that must not unwind are the ones that
+ * return normally having frozen the row on purpose.
+ */
+async function grant(params: Parameters<typeof grantInner>[0]): Promise<SponsorResult> {
+  try {
+    return await grantInner(params);
+  } catch (e) {
+    const day = params.day;
+    const amountGwei = weiToGweiCeil(params.amountWei);
+    await GasSponsorship.updateOne(
+      { userId: params.user._id, active: true },
+      { $set: { status: 'failed', note: 'Unwound after an error before broadcast' }, $unset: { active: '' } }
+    ).catch(() => {});
+    await refundCounters({
+      user: params.user,
+      day,
+      before: counters(params.user, day),
+      amountGwei,
+    }).catch(() => {});
+    throw e;
+  }
+}
+
+async function grantInner(params: {
   user: IUser;
   intent: SponsorIntent;
   wallet: Address;
   amountWei: bigint;
   gasPriceWei: bigint;
+  /** What the wallet held before this grant, for ratcheting the lock. */
+  balanceBeforeWei: bigint;
   day: string;
   now: Date;
 }): Promise<SponsorResult> {
-  const { user, intent, wallet, amountWei, gasPriceWei, day, now } = params;
+  const { user, intent, wallet, amountWei, gasPriceWei, balanceBeforeWei, day, now } = params;
 
   // One grant per user per intent per minute. The `active` index below already
   // blocks concurrent grants; this additionally makes a double-clicked button
@@ -279,16 +329,22 @@ async function grant(params: {
     { _id: sponsorship._id },
     { $set: { status: 'confirmed' }, $unset: { active: '' } }
   );
+  // Ratchet the stored figure against the balance BEFORE this grant landed,
+  // then add the grant. Without the ratchet, outstanding only ever grew — a user
+  // who legitimately spent every grant on their own transactions would still
+  // have the full lifetime total locked against them, and a later tip of real
+  // ETH would be unwithdrawable up to that amount.
+  const settled = ratchetOutstanding(own.outstandingWei, balanceBeforeWei) + amountWei;
   await User.updateOne(
     { _id: user._id },
-    { $set: { 'gasSponsored.outstandingWei': (own.outstandingWei + amountWei).toString() } }
+    { $set: { 'gasSponsored.outstandingWei': settled.toString() } }
   );
 
   return { ok: true, granted: amountWei };
 }
 
 /** Nothing moved. Clear the lock so the user may be granted again. */
-async function release(id: unknown, note: string) {
+export async function release(id: unknown, note: string) {
   await GasSponsorship.updateOne(
     { _id: id },
     { $set: { status: 'failed', note }, $unset: { active: '' } }

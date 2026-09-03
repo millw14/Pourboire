@@ -1,9 +1,10 @@
 import { NextRequest } from 'next/server';
+import type { Address } from 'viem';
 import connectDB from '@/lib/mongodb';
 import { requireCaller } from '@/lib/auth';
 import { check, handleError, ok, rateLimit, tooManyRequests, fail } from '@/lib/api';
 import { resolveCallerUser } from '@/lib/wallets';
-import { estimateFeeWei, explorerTxUrl, isAddress } from '@/lib/chain';
+import { ERC20_GAS_LIMIT, explorerTxUrl, isAddress, requiredFeeWei, tokenBalance } from '@/lib/chain';
 import { ensureGasFor } from '@/lib/gas/sponsor';
 import { parseTokenAmount, resolveToken, settleTransfer } from '@/lib/settle';
 import { formatAmount } from '@/lib/tokens';
@@ -55,16 +56,28 @@ export async function POST(req: NextRequest) {
     // which is the state this whole feature exists for — and it is reachable
     // here only because the caller is a signed-in session, never a tweet.
     if (token.info.address !== null) {
+      // Holdings FIRST. Sponsoring before checking that the wallet holds
+      // anything made a grant obtainable without a transaction: ask to withdraw
+      // a token you do not have, collect the ETH, let the request fail. One
+      // request per identity, and the ETH stays. The swap route already checked
+      // its holdings before sponsoring; this one did not.
+      const held = await tokenBalance(token.info.address as Address, user.walletAddress as Address);
+      if (held < parsed.base) {
+        return fail(400, `You only have ${formatAmount(held, token.info)}`, 'insufficient_funds');
+      }
+
       const gas = await ensureGasFor({
         user,
         intent: 'withdraw',
-        requiredWei: await estimateFeeWei(true),
+        requiredWei: await requiredFeeWei(ERC20_GAS_LIMIT),
         signedInAs: caller.privyUserId,
       });
-      if (!gas.ok && gas.reason !== 'not_needed') {
-        // Not fatal on its own — settleTransfer checks the balance again and
-        // will refuse with its own message if the wallet still cannot pay.
-        console.warn('[withdraw] gas sponsorship declined:', gas.reason);
+      if (!gas.ok) {
+        // Answer with the sponsorship refusal rather than letting settleTransfer
+        // reply "top up a little ETH" — which is the wrong advice for a fee
+        // spike (wait) and for a grant already in flight (wait), and gives the
+        // client no way to tell a gas problem from a balance one.
+        return fail(400, gas.message, 'insufficient_gas');
       }
     }
 

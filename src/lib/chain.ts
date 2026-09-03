@@ -88,8 +88,9 @@ const WEI_PER_ETH = 10n ** 18n;
 export const GAS_RESERVE_WEI = WEI_PER_ETH / 5_000n;
 
 /** A native-ETH transfer is 21000 gas; ERC-20 needs considerably more. */
-const NATIVE_GAS_LIMIT = 21_000n;
-const ERC20_GAS_LIMIT = 120_000n;
+/** Exported so gas sponsorship sizes a grant from the same limit the send uses. */
+export const NATIVE_GAS_LIMIT = 21_000n;
+export const ERC20_GAS_LIMIT = 120_000n;
 
 export function spendableWei(balanceWei: bigint): bigint {
   return balanceWei > GAS_RESERVE_WEI ? balanceWei - GAS_RESERVE_WEI : 0n;
@@ -446,4 +447,33 @@ export async function receiptStatus(hash: Hex): Promise<'success' | 'reverted' |
  */
 export async function nonceAt(address: Address): Promise<number> {
   return getPublicClient().getTransactionCount({ address, blockTag: 'latest' });
+}
+
+/**
+ * What the node will actually require to accept a transaction of this gas limit.
+ *
+ * Not the same as `estimateFeeWei`, and the difference is not academic. A
+ * transaction is signed with an EIP-1559 `maxFeePerGas` — viem computes it as
+ * `baseFee * 1.2 + priorityFee` — and the balance check the node applies is
+ * `gasLimit * maxFeePerGas`, not `gasLimit * gasPrice`. Measured on this chain
+ * those differ by about 19%.
+ *
+ * That gap matters when funding a wallet that has nothing: a grant sized on
+ * `eth_gasPrice` is refused by the node for insufficient funds, and refused
+ * *after* any earlier leg has already spent part of it. So sponsorship sizes
+ * from here, using the same fee estimate the signer will use, plus headroom for
+ * the base fee rising between the grant and the send.
+ */
+export async function requiredFeeWei(gasLimit: bigint): Promise<bigint> {
+  try {
+    const fees = await getPublicClient().estimateFeesPerGas();
+    const maxFee = fees.maxFeePerGas ?? (await getPublicClient().getGasPrice());
+    // Half again, so a base fee that climbs between sizing and signing does not
+    // strand the transaction the grant was for.
+    return (gasLimit * maxFee * 3n) / 2n;
+  } catch {
+    // The chain is unreadable; fall back to something deliberately generous
+    // rather than to something too small to work.
+    return gasLimit * 2_000_000_000n;
+  }
 }

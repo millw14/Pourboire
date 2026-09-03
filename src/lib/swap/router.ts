@@ -60,8 +60,9 @@ const ROUTER_ABI = parseAbi([
   'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) payable returns (uint256 amountOut)',
 ]);
 
-const APPROVE_GAS = 80_000n;
-const SWAP_GAS = 400_000n;
+/** Exported so gas sponsorship sizes a grant from the real limits, not a guess. */
+export const APPROVE_GAS = 80_000n;
+export const SWAP_GAS = 400_000n;
 
 /**
  * A pool read that failed for reasons unrelated to the pair.

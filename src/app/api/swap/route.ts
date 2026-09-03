@@ -4,9 +4,9 @@ import { requireCaller } from '@/lib/auth';
 import { check, fail, handleError, ok, rateLimit, tooManyRequests } from '@/lib/api';
 import { resolveCallerUser } from '@/lib/wallets';
 import { decryptPrivateKey } from '@/lib/crypto';
-import { explorerTxUrl, isAddress, nativeBalance, tokenBalance, estimateFeeWei } from '@/lib/chain';
+import { explorerTxUrl, isAddress, tokenBalance, requiredFeeWei } from '@/lib/chain';
 import { findTokenBySymbol, formatAmount, toBaseUnits, type TokenInfo } from '@/lib/tokens';
-import { executeSwap, quoteSwap, PoolLookupError } from '@/lib/swap/router';
+import { executeSwap, quoteSwap, PoolLookupError, APPROVE_GAS, SWAP_GAS } from '@/lib/swap/router';
 import { SwapQuoteError, bindToAcceptedFloor } from '@/lib/swap/quote';
 import { ensureGasFor } from '@/lib/gas/sponsor';
 import type { Address, Hex } from 'viem';
@@ -222,11 +222,14 @@ export async function POST(req: NextRequest) {
     // exactly the person this path exists for — so cover the shortfall rather
     // than refuse. `ensureGasFor` returns ok having granted nothing when the
     // wallet can already pay, so the common case costs one balance read.
-    const fee = await estimateFeeWei(true);
     const gas = await ensureGasFor({
       user,
       intent: 'swap',
-      requiredWei: fee * 2n,
+      // Sized from the actual gas limits at the fee basis the transactions will
+      // be SIGNED with, not eth_gasPrice. Measured on this chain the two differ by
+      // about 19%, so a grant sized the old way was refused by the node for
+      // insufficient funds — after the approval leg had already spent part of it.
+      requiredWei: await requiredFeeWei(APPROVE_GAS + SWAP_GAS),
       signedInAs: caller.privyUserId,
     });
     if (!gas.ok) {
