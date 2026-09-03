@@ -170,30 +170,34 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const quoted = {
+    const describe = (floor: bigint) => ({
       from: parsed.from.symbol,
       to: parsed.to.symbol,
       amountIn: formatAmount(result.quote.amountIn, parsed.from),
       // Both the estimate and the guaranteed floor, because they are different
       // promises and only one of them is binding.
       estimatedOut: formatAmount(result.quote.amountOut, parsed.to),
-      minimumOut: formatAmount(result.quote.amountOutMinimum, parsed.to),
+      minimumOut: formatAmount(floor, parsed.to),
       // The same floor in base units, for the client to hand back on execute.
       // Formatted output is rounded for display and cannot be compared exactly.
-      minimumOutBase: result.quote.amountOutMinimum.toString(),
+      minimumOutBase: floor.toString(),
       slippageBps: result.quote.slippageBps,
       feePips: result.pool.fee,
       poolShareBps: result.quote.poolShareBps,
-    };
+    });
 
     if (preview) {
-      return ok({ quote: quoted });
+      return ok({ quote: describe(result.quote.amountOutMinimum) });
     }
 
-    // The price the user read may no longer be available. Refusing here — and
-    // handing back the new numbers — is the difference between a user choosing
-    // a worse price and being given one.
-    const binding = bindToAcceptedFloor(parsed.acceptedMinimumOut, result.quote.amountOutMinimum);
+    // What the user approved becomes what the transaction carries. Refusal is
+    // reserved for a price that can no longer deliver it at all — sending that
+    // swap would revert on its own floor and burn gas proving it.
+    const binding = bindToAcceptedFloor({
+      accepted: parsed.acceptedMinimumOut,
+      freshEstimate: result.quote.amountOut,
+      freshFloor: result.quote.amountOutMinimum,
+    });
     if (!binding.ok) {
       return fail(
         409,
@@ -201,6 +205,10 @@ export async function POST(req: NextRequest) {
         'price_moved'
       );
     }
+
+    // Everything reported from here describes the floor actually being sent, not
+    // the one the preview happened to compute.
+    const quoted = describe(binding.floor);
 
     // Gas is ETH regardless of which tokens move, and a swap is two transactions.
     const fee = await estimateFeeWei(true);
@@ -223,7 +231,10 @@ export async function POST(req: NextRequest) {
       tokenIn: parsed.from,
       tokenOut: parsed.to,
       pool: result.pool,
-      quote: result.quote,
+      // The approved floor, not the freshly computed one. This is the only place
+      // `binding.floor` can matter, and passing the fresh quote through unchanged
+      // would quietly make the whole binding decorative.
+      quote: { ...result.quote, amountOutMinimum: binding.floor },
       // Budgeted against `maxDuration` above. Two default 30s waits plus pool
       // discovery could overrun 60s, and being killed mid-wait loses the hash —
       // the platform then returns a bodyless 504 that the client reads as a
@@ -284,7 +295,10 @@ export async function POST(req: NextRequest) {
         status: 'pending_approval',
         txHash: outcome.hash,
         explorerUrl: explorerTxUrl(outcome.hash),
-        retryable: false,
+        // The approve leg moves no money. Re-running signs a second approval at
+        // the next nonce, which at worst wastes a little gas — so this one IS safe
+        // to retry, and the flag now agrees with the sentence beside it.
+        retryable: true,
         message: 'The approval is still confirming. Try the swap again in a moment.',
       });
     }

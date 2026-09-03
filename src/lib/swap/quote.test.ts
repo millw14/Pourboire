@@ -233,48 +233,98 @@ test('a trade too small to carry a floor is refused, not sent unguarded', () => 
 
 /* ------------------------------------------- binding the approved price */
 
-test('a better price than the one approved goes straight through', () => {
-  const decision = bindToAcceptedFloor(100n, 120n);
-  assert.ok(decision.ok);
-  // The higher floor is used, not the accepted one — there is no reason to give
-  // someone less protection than the market is currently offering.
-  assert.equal(decision.floor, 120n);
-});
+/**
+ * The user approved "at least X". The point of these is that X is what the
+ * transaction carries — not a number the server picked afterwards.
+ */
 
-test('exactly the approved price is accepted', () => {
-  const decision = bindToAcceptedFloor(100n, 100n);
+test('the approved floor is the one that executes, not the fresh one', () => {
+  // The whole mechanism. A fresh quote is used for the estimate; the floor comes
+  // from what the person actually agreed to.
+  const decision = bindToAcceptedFloor({
+    accepted: 100n,
+    freshEstimate: 130n,
+    freshFloor: 120n,
+  });
   assert.ok(decision.ok);
   assert.equal(decision.floor, 100n);
 });
 
-test('a worse price is refused, with the shortfall measured', () => {
-  // This is the window that actually matters: between the number the person read
-  // and the number the transaction carries. Without it, amountOutMinimum only
-  // guards the milliseconds between the server's own quote and inclusion.
-  const decision = bindToAcceptedFloor(100n, 90n);
+test('a small adverse move still executes at the approved floor', () => {
+  // The version this replaces refused whenever the fresh floor dipped below the
+  // accepted one, which on a pool anyone else is trading means almost every
+  // click. The user asked for at least 100 and 101 is still available, so there
+  // is nothing to refuse.
+  const decision = bindToAcceptedFloor({
+    accepted: 100n,
+    freshEstimate: 101n,
+    freshFloor: 99n,
+  });
+  assert.ok(decision.ok);
+  assert.equal(decision.floor, 100n);
+});
+
+test('exactly the approved amount is still deliverable', () => {
+  const decision = bindToAcceptedFloor({ accepted: 100n, freshEstimate: 100n, freshFloor: 95n });
+  assert.ok(decision.ok);
+  assert.equal(decision.floor, 100n);
+});
+
+test('a price genuinely below what was approved is refused', () => {
+  // Not a tolerance judgement: at this price the swap would revert on its own
+  // floor, so sending it only burns gas to prove the point.
+  const decision = bindToAcceptedFloor({ accepted: 100n, freshEstimate: 90n, freshFloor: 89n });
   assert.ok(!decision.ok);
   assert.equal(decision.shortfallBps, 1_000); // 10%
 });
 
-test('a one-unit shortfall is still a refusal', () => {
-  // No tolerance band. The user approved a number; anything below it is a
-  // different trade, and they should get to look at it.
-  const decision = bindToAcceptedFloor(1_000_000n, 999_999n);
+test('a real refusal is never reported as a 0.00% move', () => {
+  // Integer division truncated every sub-basis-point shortfall to zero, so the
+  // message said the price moved 0.00% and refused in the same sentence.
+  const decision = bindToAcceptedFloor({
+    accepted: 1_000_000_000n,
+    freshEstimate: 999_999_999n,
+    freshFloor: 999_000_000n,
+  });
   assert.ok(!decision.ok);
+  assert.ok(decision.shortfallBps >= 1, 'a refusal must name a non-zero move');
+});
+
+test('the shortfall rounds up, never down', () => {
+  // 1.5 bps must not read as 1 bp when it is used to tell someone how far the
+  // price moved against them.
+  const decision = bindToAcceptedFloor({
+    accepted: 10_000n,
+    freshEstimate: 9_998n,
+    freshFloor: 9_000n,
+  });
+  assert.ok(!decision.ok);
+  assert.equal(decision.shortfallBps, 2);
 });
 
 test('an API caller that never previewed is not blocked', () => {
   // Nothing was approved, so there is nothing to hold the quote to. The slippage
   // limit is still enforced by the quote itself.
-  const decision = bindToAcceptedFloor(null, 90n);
+  const decision = bindToAcceptedFloor({ accepted: null, freshEstimate: 100n, freshFloor: 90n });
   assert.ok(decision.ok);
   assert.equal(decision.floor, 90n);
 });
 
-test('a zero or negative accepted floor cannot be used to disable the check', () => {
-  // Passing 0 must not read as "I accept anything" in a way that is different
-  // from not passing it at all.
-  const zero = bindToAcceptedFloor(0n, 5n);
-  assert.ok(zero.ok);
-  assert.equal(zero.floor, 5n);
+test('a zero accepted floor cannot be used to disable the check', () => {
+  // Passing 0 must behave exactly like not passing it, rather than reading as
+  // "I accept anything" and executing with a floor of zero.
+  const decision = bindToAcceptedFloor({ accepted: 0n, freshEstimate: 100n, freshFloor: 90n });
+  assert.ok(decision.ok);
+  assert.equal(decision.floor, 90n);
+  assert.ok(decision.floor > 0n, 'the executed floor is never zero');
+});
+
+test('the executed floor is never above what the pool can currently pay', () => {
+  // Sending a floor higher than the current estimate would revert a trade the
+  // user would have been happy with.
+  for (const accepted of [1n, 50n, 99n, 100n]) {
+    const decision = bindToAcceptedFloor({ accepted, freshEstimate: 100n, freshFloor: 95n });
+    assert.ok(decision.ok);
+    assert.ok(decision.floor <= 100n, `floor ${decision.floor} exceeds the estimate`);
+  }
 });

@@ -170,34 +170,50 @@ export function isQuoteReliable(quote: Quote): boolean {
 }
 
 /**
- * Bind the floor a user actually approved to the one about to be sent on chain.
+ * Bind the floor a user actually approved to the one that executes.
  *
  * The dialog quotes, the user reads a number, and some time later they press
- * Swap — at which point the server quotes again and, without this, sends
- * whatever floor the *new* quote produced. `amountOutMinimum` then protects
- * against movement between the server's own quote and inclusion, a window of
- * milliseconds, while leaving the window that actually matters — between what
- * the person saw and what they got — completely unguarded.
+ * Swap — at which point the server quotes again. Sending the *new* quote's floor
+ * makes `amountOutMinimum` protect the milliseconds between the server's own
+ * quote and inclusion, while leaving the window that actually matters — between
+ * what the person saw and what they got — completely unguarded.
  *
- * So the accepted floor becomes a floor on the floor. A better price is passed
- * through (the fresh floor is higher, and there is no reason to give the user
- * less protection than the market is offering); a worse one is refused and sent
- * back for them to look at again.
+ * So the number they approved becomes the number that executes. They said "at
+ * least X"; the transaction carries X. If the price drifts further before
+ * inclusion the swap reverts, which is the floor doing its job.
+ *
+ * Refusal is reserved for the case where it is genuinely a different trade: the
+ * current mid-price is *itself* below X, so the swap would almost certainly
+ * revert and burn gas proving it. An earlier version refused whenever the fresh
+ * floor fell below the accepted one, which sounds stricter and is worse — on a
+ * pool anyone else is trading, that fires on essentially any adverse tick, so
+ * the common outcome was a refusal for a move too small to name.
  */
 export type AcceptanceDecision =
   | { ok: true; floor: bigint }
   | { ok: false; shortfallBps: number };
 
-export function bindToAcceptedFloor(
-  accepted: bigint | null,
-  fresh: bigint
-): AcceptanceDecision {
+export function bindToAcceptedFloor(params: {
+  /** The floor the user approved, or null if they never previewed. */
+  accepted: bigint | null;
+  /** What the pool would pay right now, before slippage. */
+  freshEstimate: bigint;
+  /** The floor the fresh quote would have carried on its own. */
+  freshFloor: bigint;
+}): AcceptanceDecision {
+  const { accepted, freshEstimate, freshFloor } = params;
+
   // No accepted floor means an API caller that never previewed. The fresh quote
   // is all there is, and it is still bounded by the slippage limit.
-  if (accepted === null) return { ok: true, floor: fresh };
-  if (accepted <= 0n) return { ok: true, floor: fresh };
-  if (fresh >= accepted) return { ok: true, floor: fresh };
+  if (accepted === null || accepted <= 0n) return { ok: true, floor: freshFloor };
 
-  const shortfall = ((accepted - fresh) * 10_000n) / accepted;
-  return { ok: false, shortfallBps: Number(shortfall) };
+  // The price can still deliver what they were promised. Promise it exactly.
+  if (freshEstimate >= accepted) return { ok: true, floor: accepted };
+
+  // Round up, so a real refusal is never reported as a 0.00% move. Integer
+  // division alone truncated every sub-basis-point shortfall to zero, which read
+  // as "the price moved 0.00% against you" — a sentence that refuses and denies
+  // there is anything to refuse, in the same breath.
+  const raw = ((accepted - freshEstimate) * 10_000n + accepted - 1n) / accepted;
+  return { ok: false, shortfallBps: Math.max(1, Number(raw)) };
 }

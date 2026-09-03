@@ -45,12 +45,12 @@ const REFUSED_BEFORE_MEMPOOL = [
  * Responses that mean our exact bytes are already live — the node is telling us
  * it has them, not refusing them.
  *
- * `chain.ts` classifies `already known` as a definite *rejection*, and for a
- * freshly signed transfer that is right: retrying re-signs identical bytes,
- * producing the identical hash, which the chain deduplicates. Here the same
- * string means the opposite. We are deliberately replaying stored bytes, so
- * "already known" is confirmation the rebroadcast worked, and treating it as a
- * failure would mark a live transaction dead and invite a second one.
+ * `chain.ts` treats `already known` as indeterminate — the node holds our exact
+ * bytes, so the transaction is live and must not be retried. Here we know more
+ * than that: we are deliberately replaying stored bytes, so it is not merely
+ * "something may be in flight", it is confirmation that this specific
+ * transaction is. That is why this list is consulted first, before anything
+ * else, and why it resolves to `funding` rather than to a frozen state.
  */
 const ALREADY_IN_MEMPOOL = ['already known', 'known transaction', 'already exists'];
 

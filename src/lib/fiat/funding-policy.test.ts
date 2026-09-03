@@ -26,10 +26,10 @@ test('definite refusals fail the payout cleanly', () => {
 });
 
 test('"already known" is a live transaction on a replay, never a failure', () => {
-  // The same string chain.ts treats as a definite rejection. There it is safe,
-  // because a retry re-signs identical bytes. Here we are deliberately replaying
-  // stored bytes, so it is the node confirming it already holds them — marking
-  // that failed would declare a live transaction dead and invite a second one.
+  // chain.ts can only conclude "something may be in flight" from this string.
+  // Here we know which something: we are replaying specific stored bytes, so the
+  // node holding them is confirmation this transaction is live. Marking it
+  // failed would declare a live transaction dead and invite a second one.
   for (const message of ['already known', 'known transaction: 0xabc', 'already exists']) {
     assert.equal(classifyBroadcast({ ok: false, message }, replay).next, 'funding', message);
   }

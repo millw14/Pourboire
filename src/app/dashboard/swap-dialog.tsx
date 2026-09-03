@@ -62,6 +62,29 @@ function explorerAction(res: SwapResponse) {
   return res.explorerUrl ? { label: 'View on explorer', href: res.explorerUrl } : undefined;
 }
 
+/**
+ * Error codes the route only ever returns when nothing was broadcast.
+ *
+ * The allow-list is deliberate, and in the same spirit as the payout state
+ * machine's `ACTIONABLE`: the safe set is enumerated, so anything unrecognised —
+ * a platform timeout, a bodyless 504, a dropped socket — is treated as possibly
+ * in flight rather than as a plain failure. The alternative encoding, "assume
+ * nothing moved unless we recognise the error", fails open on exactly the cases
+ * nobody anticipated.
+ */
+const NOTHING_MOVED = new Set([
+  'unauthorized',
+  'insufficient_funds',
+  'insufficient_gas',
+  'no_pool',
+  'trade_too_large',
+  'unquotable',
+  'pool_lookup_failed',
+  'swap_failed',
+  'swap_rejected',
+  'rate_limited',
+]);
+
 export function SwapDialog({ onClose, balances, onSwapped }: Props) {
   const api = useApi();
   const { toast } = useToast();
@@ -70,9 +93,23 @@ export function SwapDialog({ onClose, balances, onSwapped }: Props) {
   const [from, setFrom] = useState(sellable[0]?.symbol ?? 'USDG');
   const [to, setTo] = useState(() => (sellable[0]?.symbol === 'NVDA' ? 'USDG' : 'NVDA'));
   const [amount, setAmount] = useState('');
-  // Latched the moment anything is broadcast, and never cleared. A swap that may
-  // be in flight must not be offered again from the same modal.
-  const [spent, setSpent] = useState(false);
+  /**
+   * Set once something has been broadcast, and never cleared.
+   *
+   * When this is set the form is replaced entirely rather than merely disabled,
+   * and — crucially — the modal does NOT close. An earlier version latched a
+   * boolean and then called `onClose()` in the same tick, which unmounts this
+   * component and discards the latch; re-opening Swap gave a live button and no
+   * memory that anything had been sent.
+   */
+  const [settled, setSettled] = useState<{
+    tone: 'success' | 'pending';
+    title: string;
+    body: string;
+    explorerUrl?: string;
+  } | null>(null);
+  /** Bumped to force a re-quote when the server rejects the price we held. */
+  const [refresh, setRefresh] = useState(0);
   // The quote is stored with the exact inputs that produced it, so staleness is
   // an equality check rather than a guess. Matching on the formatted amount by
   // prefix looked fine and was wrong: "100 USDG" starts with "10", so typing a
@@ -128,7 +165,7 @@ export function SwapDialog({ onClose, balances, onSwapped }: Props) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [api, from, to, amount, quotable, quoteKey]);
+  }, [api, from, to, amount, quotable, quoteKey, refresh]);
 
   // A quote belongs to the inputs that produced it. Rather than clearing it from
   // an effect, it is simply not shown once those inputs change — which also
@@ -136,7 +173,7 @@ export function SwapDialog({ onClose, balances, onSwapped }: Props) {
   const liveQuote = quotable && quote?.for === quoteKey ? quote.value : null;
 
   const submit = async () => {
-    if (!liveQuote || submitting || spent) return;
+    if (!liveQuote || submitting || settled) return;
     setSubmitting(true);
     try {
       const res = await api<SwapResponse>('/api/swap', {
@@ -145,65 +182,94 @@ export function SwapDialog({ onClose, balances, onSwapped }: Props) {
           from,
           to,
           amount,
-          // The floor the user is looking at as they press the button. The
-          // server refuses rather than filling below it.
+          // The floor the user is looking at as they press the button. It is
+          // what the transaction will carry.
           acceptedMinimumOut: liveQuote.minimumOutBase,
         }),
       });
 
-      if (res.status === 'indeterminate') {
-        // The transaction may be live. Nothing about this screen may invite
-        // another attempt, so the button is retired for the life of the modal
-        // and this is a pending state, not a failure.
-        setSpent(true);
-        toast({
-          tone: 'pending',
-          title: 'We are not sure whether that went through',
-          description: res.message,
-        });
-      } else if (res.status === 'pending_approval') {
+      if (res.status === 'pending_approval') {
+        // Only the approval was sent, and an approval moves no money. Re-running
+        // is safe, so this is the one broadcast that leaves the form alive.
         toast({
           tone: 'pending',
           title: 'Approval still confirming',
           description: res.message,
           action: explorerAction(res),
         });
-      } else if (res.status === 'unconfirmed') {
-        setSpent(true);
-        toast({
+        onSwapped();
+        return;
+      }
+
+      if (res.status === 'indeterminate') {
+        // The transaction may be live. The modal stays open on a terminal
+        // screen — closing it would put the user back on a dashboard with a
+        // working Swap button and a toast they may not have read.
+        setSettled({
           tone: 'pending',
-          title: 'Swap sent, not confirmed yet',
-          description: res.message,
-          action: explorerAction(res),
+          title: 'We are not sure whether that went through',
+          body:
+            res.message ??
+            'Do not try again — check your recent activity on the explorer first.',
+          explorerUrl: res.explorerUrl,
+        });
+      } else if (res.status === 'unconfirmed') {
+        setSettled({
+          tone: 'pending',
+          title: 'Sent, not confirmed yet',
+          body: res.message ?? 'Track it on the explorer — do not send again.',
+          explorerUrl: res.explorerUrl,
         });
       } else {
         // Report what executed, not what was previewed. The two can differ, and
         // naming the preview's floor in the past tense could tell someone they
         // were guaranteed more than they actually received.
         const executed = res.quote ?? liveQuote;
-        setSpent(true);
-        toast({
+        setSettled({
           tone: 'success',
           title: `Swapped ${executed.amountIn} for ${to}`,
-          description: `At least ${executed.minimumOut} was guaranteed.`,
-          action: explorerAction(res),
+          body: `At least ${executed.minimumOut} was guaranteed.`,
+          explorerUrl: res.explorerUrl,
         });
       }
 
       onSwapped();
-      onClose();
     } catch (e) {
-      const priceMoved = e instanceof ApiError && e.code === 'price_moved';
+      const code = e instanceof ApiError ? e.code : undefined;
+
+      if (code === 'price_moved') {
+        toast({
+          tone: 'pending',
+          title: 'The price moved',
+          description: e instanceof ApiError ? e.message : '',
+        });
+        // Actually re-quote. Clearing `quote` alone did nothing: it is not in the
+        // fetching effect's dependencies, so the panel simply emptied and the
+        // button stayed dead with no way to get a new price.
+        setQuote(null);
+        setRefresh((n) => n + 1);
+        return;
+      }
+
+      if (!NOTHING_MOVED.has(code ?? '')) {
+        // An error we cannot attribute — a platform timeout, a dropped socket,
+        // a bodyless 504 from an invocation killed mid-wait. The server may have
+        // broadcast before dying, so this is exactly the case that must not
+        // offer a retry, however much it looks like a plain failure.
+        setSettled({
+          tone: 'pending',
+          title: 'We lost contact while sending',
+          body: 'Do not try again — it may have gone through. Check your balance and your recent activity before doing anything else.',
+        });
+        onSwapped();
+        return;
+      }
+
       toast({
-        tone: priceMoved ? 'pending' : 'error',
-        title: priceMoved ? 'The price moved' : 'Swap failed',
+        tone: 'error',
+        title: 'Swap failed',
         description: e instanceof ApiError ? e.message : 'Something went wrong. Please try again.',
       });
-      if (priceMoved) {
-        // Force a fresh quote rather than leaving the old number on screen for
-        // them to press again.
-        setQuote(null);
-      }
     } finally {
       setSubmitting(false);
     }
@@ -211,7 +277,45 @@ export function SwapDialog({ onClose, balances, onSwapped }: Props) {
 
   // Once anything has been broadcast, this modal must never offer to do it
   // again — including on the paths where we do not know what happened.
-  const canSubmit = Boolean(liveQuote) && !quoting && !submitting && !spent;
+  const canSubmit = Boolean(liveQuote) && !quoting && !submitting && !settled;
+
+  if (settled) {
+    // A terminal screen rather than a disabled form. Nothing here can be
+    // re-submitted, and the modal stays open so this is what the user is looking
+    // at — not a dashboard with a live Swap button and a toast they may have
+    // already dismissed.
+    return (
+      <Modal
+        open
+        onClose={onClose}
+        title={settled.title}
+        description={settled.tone === 'pending' ? 'Do not send this again.' : undefined}
+      >
+        <div className="space-y-4">
+          <p className="text-sm font-light leading-relaxed text-white/70">{settled.body}</p>
+          <div className="flex items-center gap-3">
+            {settled.explorerUrl && (
+              <a
+                href={settled.explorerUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-lg border border-white/10 px-4 py-2.5 text-sm font-light text-blue-300 transition hover:text-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              >
+                View on explorer
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg bg-white/10 px-4 py-2.5 text-sm font-light transition hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
